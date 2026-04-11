@@ -1,15 +1,20 @@
-/**
- * Seat status bar — shows how many seats are occupied (e.g. "5 / 8 participants").
- * Rendered in the chat sidebar header area.
- */
-
 interface Props {
   seatsOccupied: number;
   maxSeats: number;
   audienceCount: number;
 }
 
-export default function SeatBar(_props: Props) {
-  // TODO
-  return <div>SeatBar</div>;
+export default function SeatBar({ seatsOccupied, maxSeats, audienceCount }: Props) {
+  return (
+    <div className="flex items-center justify-between text-xs text-gray-400 px-4 py-2 border-b border-gray-800">
+      <span>
+        <span className="text-white font-semibold">{seatsOccupied}</span>
+        {" / "}
+        {maxSeats} on cam
+      </span>
+      <span>
+        <span className="text-white font-semibold">{audienceCount}</span> watching
+      </span>
+    </div>
+  );
 }

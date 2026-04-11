@@ -7,8 +7,9 @@ export default defineConfig({
     host: true,
     proxy: {
       "/ws": {
-        target: "ws://backend:8000",
+        target: "ws://localhost:8000",
         ws: true,
+        changeOrigin: true,
       },
     },
   },
