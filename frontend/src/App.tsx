@@ -199,10 +199,25 @@ export default function App() {
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
     webrtc.closeAll();
+    offeredTo.current.clear();
     setStreams(new Map());
     setMuted(false);
     setCameraOff(false);
     socket.send({ type: "leave_seat" });
+  }, []);
+
+  const handleLeaveRoom = useCallback(() => {
+    localStreamRef.current?.getTracks().forEach((t) => t.stop());
+    localStreamRef.current = null;
+    webrtc.closeAll();
+    offeredTo.current.clear();
+    socket.disconnect();
+    setJoined(false);
+    setRoomState(null);
+    setMessages([]);
+    setStreams(new Map());
+    setMuted(false);
+    setCameraOff(false);
   }, []);
 
   const handleTakeSeat = useCallback(async () => {
@@ -333,6 +348,7 @@ export default function App() {
           seatsAvailable={seatsAvailable}
           onSend={handleSendChat}
           onTakeSeat={handleTakeSeat}
+          onLeaveRoom={handleLeaveRoom}
         />
       </div>
     </div>

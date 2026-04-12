@@ -58,6 +58,7 @@ class RoomConsumer(AsyncWebsocketConsumer):
             )
         elif self.role == "audience":
             await rs.decrement_audience(self.redis)
+            await self._broadcast_room_state()
 
         await rs.delete_session(self.redis, self.session_id)
         await self.channel_layer.group_discard(GROUP_NAME, self.channel_name)
@@ -116,9 +117,8 @@ class RoomConsumer(AsyncWebsocketConsumer):
         history = await rs.get_chat_history(self.redis)
         await self._send({"type": "chat_history", "payload": {"messages": history}})
 
-        # Notify everyone else that the seat map changed (only matters for participant join)
-        if role == "participant":
-            await self._broadcast_room_state()
+        # Notify everyone else that the room state changed
+        await self._broadcast_room_state()
 
     async def handle_chat(self, payload: dict):
         content = (payload.get("content") or "").strip()

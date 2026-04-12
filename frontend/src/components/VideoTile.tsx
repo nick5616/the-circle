@@ -25,7 +25,7 @@ export default function VideoTile({ name, stream, isLocal, hasVideo }: Props) {
           autoPlay
           playsInline
           muted={isLocal}
-          className="w-full h-full object-cover"
+          className={`w-full h-full object-cover${isLocal ? " scale-x-[-1]" : ""}`}
         />
       ) : (
         <div className="flex flex-col items-center gap-2 text-gray-500">

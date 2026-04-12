@@ -10,6 +10,7 @@ interface Props {
   seatsAvailable: boolean;
   onSend: (content: string) => void;
   onTakeSeat: () => void;
+  onLeaveRoom: () => void;
 }
 
 const MAX_SEATS = 8;
@@ -22,7 +23,7 @@ function formatTime(iso: string): string {
   }
 }
 
-export default function Chat({ messages, role, seatsOccupied, audienceCount, seatsAvailable, onSend, onTakeSeat }: Props) {
+export default function Chat({ messages, role, seatsOccupied, audienceCount, seatsAvailable, onSend, onTakeSeat, onLeaveRoom }: Props) {
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -43,13 +44,23 @@ export default function Chat({ messages, role, seatsOccupied, audienceCount, sea
       <div className="flex-shrink-0">
         <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
           <span className="font-semibold text-sm">Chat</span>
-          {role === "audience" && seatsAvailable && (
-            <button
-              onClick={onTakeSeat}
-              className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded px-2 py-1 transition-colors"
-            >
-              Take a Seat
-            </button>
+          {role === "audience" && (
+            <div className="flex gap-2">
+              {seatsAvailable && (
+                <button
+                  onClick={onTakeSeat}
+                  className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded px-2 py-1 transition-colors"
+                >
+                  Take a Seat
+                </button>
+              )}
+              <button
+                onClick={onLeaveRoom}
+                className="text-xs bg-gray-700 hover:bg-red-600 text-white rounded px-2 py-1 transition-colors"
+              >
+                Leave
+              </button>
+            </div>
           )}
         </div>
         <SeatBar
