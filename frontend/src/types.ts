@@ -113,3 +113,9 @@ export type ServerMessage =
   | ReceivedIceMessage
   | ParticipantLeftMessage
   | SeatDeniedMessage;
+
+// ---- Client-side UI ----
+
+export type FeedItem =
+  | { kind: "chat"; sender: string; content: string; timestamp: string }
+  | { kind: "event"; name: string; text: string; timestamp: string };

@@ -1,35 +1,45 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChatMessage, Role } from "../types";
-import SeatBar from "./SeatBar";
+import type { FeedItem, Role } from "../types";
+import { hashNameToColor } from "../fireColors";
 
 interface Props {
-  messages: ChatMessage[];
+  items: FeedItem[];
+  myName: string;
   role: Role;
-  seatsOccupied: number;
-  audienceCount: number;
   seatsAvailable: boolean;
   onSend: (content: string) => void;
   onTakeSeat: () => void;
   onLeaveRoom: () => void;
 }
 
-const MAX_SEATS = 8;
-
 function formatTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return new Date(iso).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   } catch {
     return "";
   }
 }
 
-export default function Chat({ messages, role, seatsOccupied, audienceCount, seatsAvailable, onSend, onTakeSeat, onLeaveRoom }: Props) {
+export default function Chat({
+  items,
+  myName,
+  role,
+  seatsAvailable,
+  onSend,
+  onTakeSeat,
+  onLeaveRoom,
+}: Props) {
   const [draft, setDraft] = useState("");
+  const [inputFocused, setInputFocused] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const myColor = myName ? hashNameToColor(myName) : null;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [items]);
 
   function submit() {
     const text = draft.trim();
@@ -39,69 +49,234 @@ export default function Chat({ messages, role, seatsOccupied, audienceCount, sea
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex-shrink-0">
-        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
-          <span className="font-semibold text-sm">Chat</span>
-          {role === "audience" && (
-            <div className="flex gap-2">
-              {seatsAvailable && (
-                <button
-                  onClick={onTakeSeat}
-                  className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded px-2 py-1 transition-colors"
-                >
-                  Take a Seat
-                </button>
-              )}
-              <button
-                onClick={onLeaveRoom}
-                className="text-xs bg-gray-700 hover:bg-red-600 text-white rounded px-2 py-1 transition-colors"
-              >
-                Leave
-              </button>
-            </div>
-          )}
-        </div>
-        <SeatBar
-          seatsOccupied={seatsOccupied}
-          maxSeats={MAX_SEATS}
-          audienceCount={audienceCount}
-        />
-      </div>
+    <div
+      style={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        background: "rgba(14, 10, 6, 0.88)",
+        backdropFilter: "blur(20px)",
+        boxShadow: "-14px 0 48px 0 rgba(6, 4, 2, 0.65)",
+      }}
+    >
+      {/* Feed */}
+      <div
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          padding: "48px 16px 12px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "14px",
+          minHeight: 0,
+          // Thin scrollbar, dark
+          scrollbarWidth: "thin",
+          scrollbarColor: "rgba(80,55,30,0.3) transparent",
+        }}
+      >
+        {items.length === 0 && (
+          <p
+            style={{
+              color: "rgba(190, 155, 100, 0.2)",
+              fontSize: "12px",
+              textAlign: "center",
+              letterSpacing: "0.04em",
+              marginTop: "auto",
+              paddingBottom: "24px",
+            }}
+          >
+            the circle is quiet
+          </p>
+        )}
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3 min-h-0">
-        {messages.map((msg, i) => (
-          <div key={i} className="flex flex-col gap-0.5">
-            <div className="flex items-baseline gap-2">
-              <span className="text-xs font-semibold text-indigo-400">{msg.sender}</span>
-              <span className="text-xs text-gray-600">{formatTime(msg.timestamp)}</span>
+        {items.map((item, i) => {
+          if (item.kind === "event") {
+            const nameColor = item.name
+              ? hashNameToColor(item.name)
+              : null;
+            return (
+              <div
+                key={i}
+                style={{
+                  textAlign: "center",
+                  padding: "2px 0",
+                  animation: "float-up 0.4s ease-out both",
+                }}
+              >
+                <span
+                  style={{
+                    color: nameColor ? nameColor.hex + "88" : "rgba(200,160,100,0.45)",
+                    fontSize: "11px",
+                  }}
+                >
+                  {item.name}
+                </span>
+                <span
+                  style={{
+                    color: "rgba(185, 148, 95, 0.3)",
+                    fontSize: "11px",
+                  }}
+                >
+                  {" "}
+                  {item.text}
+                </span>
+              </div>
+            );
+          }
+
+          // chat message
+          const senderColor = hashNameToColor(item.sender);
+          return (
+            <div
+              key={i}
+              className="group"
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: "3px",
+                borderLeft: `2px solid ${senderColor.hex}28`,
+                paddingLeft: "10px",
+                marginLeft: "2px",
+                animation: "float-up 0.35s cubic-bezier(0.34,1.56,0.64,1) both",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: "7px",
+                }}
+              >
+                <span
+                  style={{
+                    color: senderColor.hex,
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    letterSpacing: "0.02em",
+                  }}
+                >
+                  {item.sender}
+                </span>
+                <span
+                  className="group-hover:opacity-100"
+                  style={{
+                    color: "rgba(180, 140, 85, 0.25)",
+                    fontSize: "10px",
+                    opacity: 0,
+                    transition: "opacity 0.2s ease",
+                  }}
+                >
+                  {formatTime(item.timestamp)}
+                </span>
+              </div>
+              <p
+                style={{
+                  color: "rgba(232, 202, 165, 0.88)",
+                  fontSize: "13px",
+                  lineHeight: 1.45,
+                  margin: 0,
+                  wordBreak: "break-word",
+                }}
+              >
+                {item.content}
+              </p>
             </div>
-            <p className="text-sm text-gray-200 break-words">{msg.content}</p>
-          </div>
-        ))}
+          );
+        })}
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <div className="flex-shrink-0 border-t border-gray-800 p-3 flex gap-2">
-        <input
-          type="text"
-          placeholder="Say something…"
-          maxLength={1000}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submit()}
-          className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-        />
-        <button
-          onClick={submit}
-          disabled={!draft.trim()}
-          className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg px-3 py-2 text-sm font-semibold transition-colors"
-        >
-          Send
-        </button>
+      {/* Bottom — input + room actions */}
+      <div
+        style={{
+          flexShrink: 0,
+          padding: "12px 16px 20px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "12px",
+        }}
+      >
+        {/* Room actions */}
+        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          {role === "audience" && seatsAvailable && (
+            <button
+              onClick={onTakeSeat}
+              style={{
+                background: "none",
+                border: "none",
+                color: "rgba(210, 175, 120, 0.5)",
+                fontSize: "11px",
+                letterSpacing: "0.04em",
+                cursor: "pointer",
+                padding: "0",
+              }}
+            >
+              take a seat
+            </button>
+          )}
+          <button
+            onClick={onLeaveRoom}
+            style={{
+              background: "none",
+              border: "none",
+              color: "rgba(180, 130, 85, 0.3)",
+              fontSize: "11px",
+              letterSpacing: "0.04em",
+              cursor: "pointer",
+              padding: "0",
+              marginLeft: "auto",
+            }}
+          >
+            leave
+          </button>
+        </div>
+
+        {/* Input — bottom line only */}
+        <div style={{ position: "relative" }}>
+          <input
+            type="text"
+            placeholder="say something…"
+            maxLength={1000}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            onFocus={() => setInputFocused(true)}
+            onBlur={() => setInputFocused(false)}
+            className="fire-input w-full"
+            style={{
+              background: "transparent",
+              border: "none",
+              borderBottom: `1px solid ${
+                inputFocused && myColor
+                  ? myColor.hex + "55"
+                  : "rgba(255,255,255,0.07)"
+              }`,
+              padding: "7px 0 8px",
+              color: "rgba(232, 200, 160, 0.88)",
+              fontSize: "13px",
+              caretColor: myColor ? myColor.hex : "rgba(220,175,115,0.7)",
+              transition: "border-color 0.4s ease",
+            }}
+          />
+          {inputFocused && myColor && (
+            <div
+              style={{
+                position: "absolute",
+                bottom: 0,
+                left: 0,
+                right: 0,
+                height: "1px",
+                background: `linear-gradient(90deg, transparent, ${myColor.hex}55, transparent)`,
+                pointerEvents: "none",
+              }}
+            />
+          )}
+        </div>
       </div>
     </div>
   );

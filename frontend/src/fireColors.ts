@@ -14,10 +14,11 @@ export const FIRE_COLORS: FireColor[] = [
   { element: "Strontium", hex: "#E74C3C" },
 ];
 
+// djb2 with Math.imul for proper 32-bit arithmetic — floats kill distribution
 export function hashNameToColor(name: string): FireColor {
-  let hash = 5381;
+  let h = 5381;
   for (let i = 0; i < name.length; i++) {
-    hash = (hash * 33) ^ name.charCodeAt(i);
+    h = Math.imul(h, 33) ^ name.charCodeAt(i);
   }
-  return FIRE_COLORS[Math.abs(hash) % FIRE_COLORS.length];
+  return FIRE_COLORS[(h >>> 0) % FIRE_COLORS.length];
 }
