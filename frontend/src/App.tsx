@@ -240,11 +240,12 @@ export default function App() {
   // Render
   // -----------------------------------------------------------------------
   const seatsOccupied = roomState ? roomState.seats.filter(Boolean).length : 0;
+  const seats = roomState?.seats ?? (Array(8).fill(null) as Array<Seat | null>);
 
   if (!joined || !roomState) {
     return (
       <LandingLobby
-        seatsOccupied={seatsOccupied}
+        seats={seats}
         audienceCount={roomState?.audience_count ?? 0}
         onJoin={handleJoin}
       />
