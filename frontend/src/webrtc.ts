@@ -5,6 +5,9 @@ const peers = new Map<string, RTCPeerConnection>();
 // ICE candidates that arrived before setRemoteDescription was called
 const iceQueues = new Map<string, RTCIceCandidateInit[]>();
 
+// Session IDs that were deliberately closed by us — don't fire disconnect callbacks for these
+const intentionallyClosed = new Set<string>();
+
 // Called by App to hand the local stream in after getUserMedia
 let _localStream: MediaStream | null = null;
 
@@ -12,7 +15,14 @@ let _localStream: MediaStream | null = null;
 type StreamCallback = (sessionId: string, stream: MediaStream | null) => void;
 let _onStream: StreamCallback = () => {};
 
+// Called by App when a peer connection genuinely fails (not a deliberate close)
+type DisconnectCallback = (sessionId: string) => void;
+let _onDisconnect: DisconnectCallback = () => {};
+
 function makePeerConnection(remoteId: string): RTCPeerConnection {
+  // A new connection replaces any intentional-close tracking for this peer
+  intentionallyClosed.delete(remoteId);
+
   const pc = new RTCPeerConnection({
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
   });
@@ -26,8 +36,28 @@ function makePeerConnection(remoteId: string): RTCPeerConnection {
 
   // Surface remote tracks to App
   pc.ontrack = (event) => {
-    const [stream] = event.streams;
-    if (stream) _onStream(remoteId, stream);
+    const stream = event.streams[0];
+    if (stream) {
+      _onStream(remoteId, stream);
+    } else if (event.track) {
+      // Fallback: synthesize a stream from the track (some browsers omit streams)
+      const synth = new MediaStream([event.track]);
+      _onStream(remoteId, synth);
+    }
+  };
+
+  // Detect genuine ICE failures and notify App so it can retry signaling.
+  // We skip this if the connection was intentionally closed by us (peer left, etc.)
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === "failed" && !intentionallyClosed.has(remoteId)) {
+      if (peers.get(remoteId) === pc) {
+        pc.close();
+        peers.delete(remoteId);
+        iceQueues.delete(remoteId);
+        _onStream(remoteId, null);
+        _onDisconnect(remoteId);
+      }
+    }
   };
 
   // Add local tracks so the remote side receives our media
@@ -48,6 +78,10 @@ export const webrtc = {
 
   setStreamCallback(cb: StreamCallback): void {
     _onStream = cb;
+  },
+
+  setDisconnectCallback(cb: DisconnectCallback): void {
+    _onDisconnect = cb;
   },
 
   /** Called by existing participants when a new participant's session_id appears.
@@ -105,6 +139,7 @@ export const webrtc = {
   },
 
   closeConnection(sessionId: string): void {
+    intentionallyClosed.add(sessionId);
     peers.get(sessionId)?.close();
     peers.delete(sessionId);
     iceQueues.delete(sessionId);
@@ -112,6 +147,7 @@ export const webrtc = {
   },
 
   closeAll(): void {
+    for (const id of peers.keys()) intentionallyClosed.add(id);
     peers.forEach((pc) => pc.close());
     peers.clear();
     iceQueues.clear();

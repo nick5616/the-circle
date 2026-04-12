@@ -6,7 +6,12 @@ interface Props {
   stream?: MediaStream;
   isLocal?: boolean;
   hasVideo?: boolean;   // true = render video element, false = render presence state
-  isSpeaking?: boolean;
+  audioLevel?: number;  // 0–1 perceptual loudness
+}
+
+// Convert 0-255 integer to two-digit hex
+function toHex2(n: number) {
+  return Math.round(Math.max(0, Math.min(255, n))).toString(16).padStart(2, "0");
 }
 
 export default function VideoTile({
@@ -14,9 +19,11 @@ export default function VideoTile({
   stream,
   isLocal,
   hasVideo,
-  isSpeaking,
+  audioLevel = 0,
 }: Props) {
   const color = name ? hashNameToColor(name) : null;
+
+  const isSpeaking = audioLevel > 0.1;
 
   const videoRef = useCallback(
     (el: HTMLVideoElement | null) => {
@@ -29,8 +36,12 @@ export default function VideoTile({
     ? `0 0 0 1.5px ${color.hex}38, 0 0 18px 4px ${color.hex}16`
     : "none";
   const glowSpeaking = color
-    ? `0 0 0 2px ${color.hex}70, 0 0 28px 8px ${color.hex}35`
+    ? `0 0 0 2.5px ${color.hex}90, 0 0 36px 10px ${color.hex}45`
     : "none";
+
+  // Inset glow alpha scales linearly with perceptual level.
+  // Geometry is fixed so it stays near the edges (18px blur, 4px spread).
+  const insetAlpha = color ? toHex2(audioLevel * 0.82 * 255) : "00";
 
   return (
     <div
@@ -117,14 +128,15 @@ export default function VideoTile({
         </div>
       )}
 
-      {/* Speaking ring pulse — appears on top of the glow ring */}
-      {isSpeaking && color && (
+      {/* Speaking edge bleed — inset glow whose alpha tracks perceptual loudness.
+          Fixed geometry keeps it near the edges; alpha does all the work. */}
+      {audioLevel > 0.01 && color && (
         <div
           className="pointer-events-none absolute inset-0"
           style={{
             borderRadius: "11px",
-            boxShadow: `inset 0 0 0 1.5px ${color.hex}50`,
-            animation: "glow-pulse 1.4s ease-in-out infinite",
+            boxShadow: `inset 0 0 18px 4px ${color.hex}${insetAlpha}`,
+            zIndex: 10,
           }}
         />
       )}

@@ -96,13 +96,16 @@ export default function LandingLobby({ seats, audienceCount, onJoin }: Props) {
       <div
         className="relative z-10 flex flex-col items-center px-4"
         style={{
-          gap: "36px",
+          gap: "0",
           opacity: pageVisible ? 1 : 0,
           transform: pageVisible ? "translateY(0)" : "translateY(20px)",
           transition:
             "opacity 0.95s ease-out, transform 0.95s cubic-bezier(0.34, 1.56, 0.64, 1)",
         }}
       >
+        {/* ── Top group: circle + presence label ── */}
+        <div className="flex flex-col items-center" style={{ gap: "14px" }}>
+
         {/* Seat circle */}
         <div
           className="relative"
@@ -156,7 +159,6 @@ export default function LandingLobby({ seats, audienceCount, onJoin }: Props) {
             color: "rgba(215, 168, 105, 0.35)",
             fontSize: "11px",
             letterSpacing: "0.08em",
-            marginTop: "-20px",
           }}
         >
           {seatsOccupied === 0 && audienceCount === 0
@@ -168,6 +170,14 @@ export default function LandingLobby({ seats, audienceCount, onJoin }: Props) {
                 .filter(Boolean)
                 .join("  ·  ")}
         </p>
+
+        </div>{/* end top group */}
+
+        {/* ── Spacer between the two groups ── */}
+        <div style={{ height: "52px" }} />
+
+        {/* ── Bottom group: name + buttons ── */}
+        <div className="flex flex-col items-center" style={{ gap: "28px" }}>
 
         {/* Name input — no box, just an underline */}
         <div className="relative" style={{ width: "260px" }}>
@@ -258,6 +268,20 @@ export default function LandingLobby({ seats, audienceCount, onJoin }: Props) {
             {seatsFull ? "circle is full" : "take a seat"}
           </button>
 
+          {/* or — cursive divider */}
+          <span
+            style={{
+              fontFamily: "Georgia, 'Times New Roman', serif",
+              fontStyle: "italic",
+              color: "rgba(210, 170, 120, 0.22)",
+              fontSize: "14px",
+              letterSpacing: "0.04em",
+              userSelect: "none",
+            }}
+          >
+            or
+          </span>
+
           {/* join the audience — pure text, no container */}
           <button
             onClick={() => join("audience")}
@@ -293,7 +317,10 @@ export default function LandingLobby({ seats, audienceCount, onJoin }: Props) {
             finding your place…
           </p>
         )}
-      </div>
+
+        </div>{/* end bottom group */}
+
+      </div>{/* end main content */}
     </div>
   );
 }

@@ -16,15 +16,18 @@ interface RoomState {
 
 // ─── Speaking detection hook ────────────────────────────────────────────────
 
+// dBFS silence floor — below this is treated as silence
+const SILENCE_FLOOR_DB = -48;
+
 function useSpeaking(
   streams: Map<string, MediaStream>,
   localSessionId: string
-): Set<string> {
+): Map<string, number> {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analysersRef = useRef(
-    new Map<string, { analyser: AnalyserNode; data: Uint8Array<ArrayBuffer> }>()
+    new Map<string, { analyser: AnalyserNode; data: Uint8Array<ArrayBuffer>; smoothed: number }>()
   );
-  const [speaking, setSpeaking] = useState<Set<string>>(new Set());
+  const [audioLevels, setAudioLevels] = useState<Map<string, number>>(new Map());
 
   // Add / remove analysers as streams change
   useEffect(() => {
@@ -46,11 +49,11 @@ function useSpeaking(
         if (!stream.getAudioTracks().length) continue;
         const source = ctx.createMediaStreamSource(stream);
         const analyser = ctx.createAnalyser();
-        analyser.fftSize = 128;
-        analyser.smoothingTimeConstant = 0.85;
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.6; // lighter — we do our own EMA
         source.connect(analyser);
         const buf = new ArrayBuffer(analyser.frequencyBinCount);
-        analysersRef.current.set(id, { analyser, data: new Uint8Array(buf) });
+        analysersRef.current.set(id, { analyser, data: new Uint8Array(buf), smoothed: 0 });
       }
       for (const id of analysersRef.current.keys()) {
         if (!norm.has(id)) analysersRef.current.delete(id);
@@ -64,29 +67,49 @@ function useSpeaking(
   useEffect(() => {
     let raf: number;
     function poll() {
-      const now = new Set<string>();
-      for (const [id, { analyser, data }] of analysersRef.current) {
-        analyser.getByteFrequencyData(data);
+      const levels = new Map<string, number>();
+
+      for (const [id, entry] of analysersRef.current) {
+        entry.analyser.getByteFrequencyData(entry.data);
         const rms = Math.sqrt(
-          data.reduce((s, v) => s + v * v, 0) / data.length
+          entry.data.reduce((s, v) => s + v * v, 0) / entry.data.length
         );
-        if (rms > 9) now.add(id);
+
+        // Convert RMS (0-255 scale) → dBFS → perceptual 0-1 level.
+        // Perceived loudness is roughly linear in dB, so a dBFS → 0-1 mapping
+        // gives us a scale that matches how humans hear volume differences.
+        let rawLevel = 0;
+        if (rms > 0) {
+          const dBFS = 20 * Math.log10(rms / 255);
+          rawLevel = Math.max(0, Math.min(1, (dBFS - SILENCE_FLOOR_DB) / -SILENCE_FLOOR_DB));
+        }
+
+        // EMA: rises fast (0.35 weight on new), decays moderately (0.65 carry)
+        // so the glow tracks speech onset quickly but doesn't strobe
+        entry.smoothed = entry.smoothed * 0.65 + rawLevel * 0.35;
+
+        if (entry.smoothed > 0.01) levels.set(id, entry.smoothed);
       }
-      setSpeaking((prev) => {
-        if (
-          prev.size === now.size &&
-          [...now].every((id) => prev.has(id))
-        )
-          return prev;
-        return new Set(now);
+
+      setAudioLevels((prev) => {
+        // Avoid re-render if nothing changed by more than the visual deadband (2.5%)
+        if (prev.size !== levels.size) return new Map(levels);
+        for (const [k, v] of levels) {
+          if (Math.abs((prev.get(k) ?? 0) - v) > 0.025) return new Map(levels);
+        }
+        for (const k of prev.keys()) {
+          if (!levels.has(k)) return new Map(levels);
+        }
+        return prev;
       });
+
       raf = requestAnimationFrame(poll);
     }
     raf = requestAnimationFrame(poll);
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  return speaking;
+  return audioLevels;
 }
 
 // ─── App ────────────────────────────────────────────────────────────────────
@@ -122,7 +145,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streams, roomState?.your_session_id]);
 
-  const speaking = useSpeaking(
+  const audioLevels = useSpeaking(
     streams,
     roomState?.your_session_id ?? ""
   );
@@ -172,6 +195,23 @@ export default function App() {
         else next.delete(sessionId);
         return next;
       });
+    });
+  }, []);
+
+  // ── WebRTC reconnect on ICE failure ───────────────────────────────────────
+  useEffect(() => {
+    webrtc.setDisconnectCallback((sessionId) => {
+      const state = roomStateRef.current;
+      if (!state) return;
+      const stillInRoom = state.seats.some((s) => s?.session_id === sessionId);
+      if (!stillInRoom) return;
+      // Reset tracking so the offer logic can re-run for this peer
+      offeredTo.current.delete(sessionId);
+      offeredTo.current.add(sessionId);
+      // Only the lower session_id re-initiates to avoid both sides offering
+      if (state.your_session_id < sessionId) {
+        webrtc.createOffer(sessionId);
+      }
     });
   }, []);
 
@@ -416,8 +456,17 @@ export default function App() {
 
       {/* Top-right icon cluster */}
       <div
-        className="absolute z-30 flex items-center gap-2"
-        style={{ top: "14px", right: chatOpen ? "292px" : "14px", transition: "right 0.4s cubic-bezier(0.34,1.56,0.64,1)" }}
+        className="absolute z-30 flex items-center gap-1"
+        style={{
+          top: "14px",
+          right: chatOpen ? "292px" : "14px",
+          transition: "right 0.42s cubic-bezier(0.25, 1, 0.5, 1)",
+          background: "rgba(8, 5, 3, 0.78)",
+          backdropFilter: "blur(14px)",
+          borderRadius: "999px",
+          padding: "3px",
+          border: "1px solid rgba(255,255,255,0.07)",
+        }}
       >
         {/* View toggle */}
         <button
@@ -462,14 +511,23 @@ export default function App() {
         </button>
       </div>
 
-      {/* Video — fills entire canvas */}
-      <div className="absolute inset-0">
+      {/* Video — fills canvas except where chat overlaps */}
+      <div
+        className="absolute"
+        style={{
+          top: 0,
+          left: 0,
+          bottom: 0,
+          right: chatOpen ? 276 : 0,
+          transition: "right 0.42s cubic-bezier(0.25, 1, 0.5, 1)",
+        }}
+      >
         <VideoGrid
           seats={roomState.seats}
           streams={gridStreams}
           localSessionId={roomState.your_session_id}
           view={view}
-          speaking={speaking}
+          audioLevels={audioLevels}
           localCameraOff={cameraOff}
         />
       </div>
@@ -489,6 +547,55 @@ export default function App() {
           audienceCount={roomState.audience_count}
         />
       </div>
+
+      {/* Audience controls */}
+      {role === "audience" && (
+        <div
+          className="absolute z-10 flex items-center justify-center"
+          style={{ bottom: "16px", left: 0, right: 0, gap: "14px", display: "flex" }}
+        >
+          {seatsAvailable && (
+            <button
+              onClick={handleTakeSeat}
+              title="Join a seat"
+              style={{
+                height: "40px",
+                padding: "0 20px",
+                borderRadius: "20px",
+                background: "rgba(22, 15, 9, 0.82)",
+                backdropFilter: "blur(10px)",
+                border: "1px solid rgba(200, 155, 85, 0.22)",
+                color: "rgba(225, 185, 130, 0.72)",
+                fontSize: "13px",
+                letterSpacing: "0.04em",
+                cursor: "pointer",
+                transition: "border-color 0.3s ease, color 0.3s ease",
+              }}
+            >
+              join seat
+            </button>
+          )}
+          <button
+            onClick={handleLeaveRoom}
+            title="Leave room"
+            style={{
+              height: "40px",
+              padding: "0 20px",
+              borderRadius: "20px",
+              background: "rgba(22, 15, 9, 0.82)",
+              backdropFilter: "blur(10px)",
+              border: "1px solid rgba(160, 60, 40, 0.2)",
+              color: "rgba(210, 100, 75, 0.55)",
+              fontSize: "13px",
+              letterSpacing: "0.04em",
+              cursor: "pointer",
+              transition: "border-color 0.3s ease, color 0.3s ease",
+            }}
+          >
+            leave room
+          </button>
+        </div>
+      )}
 
       {/* Participant controls */}
       {role === "participant" && (
@@ -544,6 +651,19 @@ export default function App() {
                 d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
             </svg>
           </ControlBtn>
+
+          {/* Leave room entirely */}
+          <ControlBtn
+            onClick={handleLeaveRoom}
+            active={false}
+            title="Leave room"
+            severe
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path strokeLinecap="round" strokeLinejoin="round"
+                d="M5.636 5.636a9 9 0 1012.728 12.728M12 3v9m0 0l3-3m-3 3L9 9" />
+            </svg>
+          </ControlBtn>
         </div>
       )}
 
@@ -553,8 +673,8 @@ export default function App() {
         style={{
           width: "276px",
           transform: chatOpen ? "translateX(0)" : "translateX(100%)",
-          transition:
-            "transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1)",
+          transition: "transform 0.38s cubic-bezier(0.25, 1, 0.5, 1)",
+          pointerEvents: chatOpen ? "auto" : "none",
         }}
       >
         <Chat
@@ -574,18 +694,17 @@ export default function App() {
 // ─── Shared style objects ────────────────────────────────────────────────────
 
 const iconBtn: React.CSSProperties = {
-  width: "34px",
-  height: "34px",
+  width: "32px",
+  height: "32px",
   borderRadius: "50%",
-  background: "rgba(255,255,255,0.05)",
-  backdropFilter: "blur(8px)",
+  background: "transparent",
   border: "none",
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  color: "rgba(205,168,115,0.45)",
+  color: "rgba(215, 180, 125, 0.82)",
   cursor: "pointer",
-  transition: "color 0.25s ease, background 0.25s ease",
+  transition: "color 0.25s ease",
 };
 
 function ControlBtn({
@@ -593,12 +712,14 @@ function ControlBtn({
   onClick,
   active,
   danger,
+  severe,
   title,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   active: boolean;
   danger?: boolean;
+  severe?: boolean;
   title?: string;
 }) {
   return (
@@ -611,16 +732,20 @@ function ControlBtn({
         borderRadius: "50%",
         background: active
           ? "rgba(210, 55, 55, 0.18)"
+          : severe
+          ? "rgba(180, 40, 40, 0.22)"
           : "rgba(22, 15, 9, 0.78)",
         backdropFilter: "blur(10px)",
-        border: "none",
+        border: severe ? "1px solid rgba(200, 60, 60, 0.25)" : "none",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
         color: active
           ? "#e74c3c"
+          : severe
+          ? "rgba(220, 100, 80, 0.75)"
           : danger
-          ? "rgba(220, 160, 100, 0.45)"
+          ? "rgba(220, 160, 100, 0.5)"
           : "rgba(225, 190, 145, 0.6)",
         cursor: "pointer",
         boxShadow: active ? "0 0 16px 3px rgba(210,55,55,0.2)" : "none",

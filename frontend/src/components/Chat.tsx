@@ -196,40 +196,42 @@ export default function Chat({
           gap: "12px",
         }}
       >
-        {/* Room actions */}
-        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-          {role === "audience" && seatsAvailable && (
+        {/* Room actions — audience only (participants have controls bar) */}
+        {role === "audience" && (
+          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+            {seatsAvailable && (
+              <button
+                onClick={onTakeSeat}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "rgba(210, 175, 120, 0.5)",
+                  fontSize: "11px",
+                  letterSpacing: "0.04em",
+                  cursor: "pointer",
+                  padding: "0",
+                }}
+              >
+                take a seat
+              </button>
+            )}
             <button
-              onClick={onTakeSeat}
+              onClick={onLeaveRoom}
               style={{
                 background: "none",
                 border: "none",
-                color: "rgba(210, 175, 120, 0.5)",
+                color: "rgba(180, 130, 85, 0.35)",
                 fontSize: "11px",
                 letterSpacing: "0.04em",
                 cursor: "pointer",
                 padding: "0",
+                marginLeft: "auto",
               }}
             >
-              take a seat
+              leave room
             </button>
-          )}
-          <button
-            onClick={onLeaveRoom}
-            style={{
-              background: "none",
-              border: "none",
-              color: "rgba(180, 130, 85, 0.3)",
-              fontSize: "11px",
-              letterSpacing: "0.04em",
-              cursor: "pointer",
-              padding: "0",
-              marginLeft: "auto",
-            }}
-          >
-            leave
-          </button>
-        </div>
+          </div>
+        )}
 
         {/* Input — bottom line only */}
         <div style={{ position: "relative" }}>
