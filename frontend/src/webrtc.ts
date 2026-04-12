@@ -50,9 +50,16 @@ export const webrtc = {
     _onStream = cb;
   },
 
-  /** Called by existing participants when a new participant's session_id appears. */
+  /** Called by existing participants when a new participant's session_id appears.
+   *  Also called by audience members (no local stream) to receive-only from participants. */
   async createOffer(targetId: string): Promise<void> {
     const pc = makePeerConnection(targetId);
+    // Audience members have no local stream — add recvonly transceivers so the
+    // SDP offer asks the participant to send their tracks.
+    if (!_localStream) {
+      pc.addTransceiver("video", { direction: "recvonly" });
+      pc.addTransceiver("audio", { direction: "recvonly" });
+    }
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     socket.send({ type: "offer", payload: { target: targetId, sdp: pc.localDescription! } });
