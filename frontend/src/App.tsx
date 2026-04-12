@@ -300,7 +300,12 @@ export default function App() {
     if (role === "participant") {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user" },
+          video: {
+            facingMode: "user",
+            width: { ideal: 640, max: 854 },
+            height: { ideal: 360, max: 480 },
+            frameRate: { ideal: 24, max: 30 },
+          },
           audio: true,
         });
         localStreamRef.current = stream;
@@ -405,7 +410,12 @@ export default function App() {
   const handleTakeSeat = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user" },
+        video: {
+          facingMode: "user",
+          width: { ideal: 640, max: 854 },
+          height: { ideal: 360, max: 480 },
+          frameRate: { ideal: 24, max: 30 },
+        },
         audio: true,
       });
       localStreamRef.current = stream;
