@@ -2,6 +2,9 @@ import { socket } from "./socket";
 
 const peers = new Map<string, RTCPeerConnection>();
 
+// ICE candidates that arrived before setRemoteDescription was called
+const iceQueues = new Map<string, RTCIceCandidateInit[]>();
+
 // Called by App to hand the local stream in after getUserMedia
 let _localStream: MediaStream | null = null;
 
@@ -57,8 +60,15 @@ export const webrtc = {
 
   /** Called when we receive an offer from a peer. */
   async handleOffer(fromId: string, sdp: RTCSessionDescriptionInit): Promise<void> {
+    peers.get(fromId)?.close();
+    iceQueues.delete(fromId);
     const pc = makePeerConnection(fromId);
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    // Flush any ICE candidates that arrived before the offer
+    for (const c of iceQueues.get(fromId) ?? []) {
+      await pc.addIceCandidate(new RTCIceCandidate(c));
+    }
+    iceQueues.delete(fromId);
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     socket.send({ type: "answer", payload: { target: fromId, sdp: pc.localDescription! } });
@@ -66,23 +76,38 @@ export const webrtc = {
 
   async handleAnswer(fromId: string, sdp: RTCSessionDescriptionInit): Promise<void> {
     const pc = peers.get(fromId);
-    if (pc) await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    if (!pc) return;
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    // Flush any ICE candidates that arrived before the answer
+    for (const c of iceQueues.get(fromId) ?? []) {
+      await pc.addIceCandidate(new RTCIceCandidate(c));
+    }
+    iceQueues.delete(fromId);
   },
 
   async handleIce(fromId: string, candidate: RTCIceCandidateInit): Promise<void> {
     const pc = peers.get(fromId);
-    if (pc) await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    if (!pc || !pc.remoteDescription) {
+      // Buffer until remote description is set
+      const q = iceQueues.get(fromId) ?? [];
+      q.push(candidate);
+      iceQueues.set(fromId, q);
+      return;
+    }
+    await pc.addIceCandidate(new RTCIceCandidate(candidate));
   },
 
   closeConnection(sessionId: string): void {
     peers.get(sessionId)?.close();
     peers.delete(sessionId);
+    iceQueues.delete(sessionId);
     _onStream(sessionId, null);
   },
 
   closeAll(): void {
     peers.forEach((pc) => pc.close());
     peers.clear();
+    iceQueues.clear();
     _localStream = null;
   },
 };

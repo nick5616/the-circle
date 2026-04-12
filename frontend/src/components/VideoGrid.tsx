@@ -26,12 +26,12 @@ export default function VideoGrid({ seats, streams, localSessionId }: Props) {
 
   return (
     <div className={`grid ${cols} gap-3 h-full content-start`}>
-      {seats.map((seat, i) => (
+      {seats.filter(Boolean).map((seat) => (
         <VideoTile
-          key={seat?.session_id ?? `empty-${i}`}
-          name={seat?.name}
-          stream={seat ? streams.get(seat.session_id) : undefined}
-          isLocal={seat?.session_id === localSessionId}
+          key={seat!.session_id}
+          name={seat!.name}
+          stream={streams.get(seat!.session_id)}
+          isLocal={seat!.session_id === localSessionId}
         />
       ))}
     </div>

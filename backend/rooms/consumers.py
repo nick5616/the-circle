@@ -41,6 +41,9 @@ class RoomConsumer(AsyncWebsocketConsumer):
 
         await self.channel_layer.group_add(GROUP_NAME, self.channel_name)
         await self.accept()
+        # Push current room snapshot so the lobby can display live counts
+        # before the user has clicked Join.
+        await self._send_room_state_to_self()
 
     async def disconnect(self, close_code):
         if self.role == "participant":

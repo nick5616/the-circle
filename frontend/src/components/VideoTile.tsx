@@ -16,7 +16,7 @@ export default function VideoTile({ name, stream, isLocal }: Props) {
   }, [stream]);
 
   return (
-    <div className="relative bg-gray-800 rounded-xl overflow-hidden aspect-video flex items-center justify-center">
+    <div className="relative bg-gray-800 rounded-xl overflow-hidden aspect-video max-h-[80vh] w-full flex items-center justify-center">
       {stream ? (
         <video
           ref={videoRef}
