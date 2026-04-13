@@ -50,6 +50,11 @@
   100% { background-position: 50% 80%; }
 }
 
+@keyframes slide-up-overlay {
+  from { transform: translateY(32px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
 /* ------------------------------------------------------------------ */
 /* Utility animation classes                                            */
 /* ------------------------------------------------------------------ */
@@ -79,6 +84,14 @@
   .animate-speaking-fire {
     animation: speaking-fire 2.2s ease-in-out infinite;
   }
+  .animate-slide-up-overlay {
+    animation: slide-up-overlay 0.32s cubic-bezier(0.34, 1.2, 0.64, 1) both;
+  }
+}
+
+/* Hide scrollbar for mobile video grid */
+.mobile-grid-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 /* ------------------------------------------------------------------ */

@@ -4,8 +4,24 @@ import { webrtc } from "./webrtc";
 import type { FeedItem, Role, Seat, ServerMessage } from "./types";
 import LandingLobby from "./components/LandingLobby";
 import VideoGrid from "./components/VideoGrid";
+import MobileVideoGrid from "./components/MobileVideoGrid";
 import Chat from "./components/Chat";
+import MobileChatOverlay from "./components/MobileChatOverlay";
 import SeatBar from "./components/SeatBar";
+
+// ─── Mobile detection hook ───────────────────────────────────────────────────
+
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== "undefined" && window.innerWidth < 768
+  );
+  useEffect(() => {
+    const update = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+  return isMobile;
+}
 
 interface RoomState {
   seats: Array<Seat | null>;
@@ -115,6 +131,7 @@ function useSpeaking(
 // ─── App ────────────────────────────────────────────────────────────────────
 
 export default function App() {
+  const isMobile = useIsMobile();
   const [joined, setJoined] = useState(false);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
@@ -128,6 +145,8 @@ export default function App() {
     () => typeof window !== "undefined" && window.innerWidth >= 1024
   );
   const [localName, setLocalName] = useState("");
+  const [mobileChatExpanded, setMobileChatExpanded] = useState(false);
+  const [mobileChatDraft, setMobileChatDraft] = useState("");
 
   const localStreamRef = useRef<MediaStream | null>(null);
   const offeredTo = useRef<Set<string>>(new Set());
@@ -446,6 +465,184 @@ export default function App() {
   const role = roomState.your_role;
   const seatsAvailable = seatsOccupied < 8;
 
+  // ── Mobile layout ─────────────────────────────────────────────────────────
+  if (isMobile) {
+    return (
+      <div
+        className="relative overflow-hidden"
+        style={{ width: "100%", height: "100dvh", backgroundColor: "#1a1510" }}
+      >
+        {/* Ambient fire glow */}
+        <div
+          className="pointer-events-none absolute inset-0 animate-fire-breathe"
+          style={{
+            background:
+              "radial-gradient(ellipse 70% 60% at 50% 50%, rgba(190,80,10,0.07) 0%, transparent 70%)",
+          }}
+        />
+
+        {/* Video fills the whole screen */}
+        <div className="absolute inset-0">
+          <MobileVideoGrid
+            seats={roomState.seats}
+            streams={gridStreams}
+            localSessionId={roomState.your_session_id}
+            audioLevels={audioLevels}
+            localCameraOff={cameraOff}
+          />
+        </div>
+
+        {/* Seat indicator — floats above tiles */}
+        <div
+          className="absolute z-10 pointer-events-none"
+          style={{
+            top: "14px",
+            left: "50%",
+            transform: "translateX(-50%)",
+          }}
+        >
+          <SeatBar
+            seats={roomState.seats}
+            audienceCount={roomState.audience_count}
+          />
+        </div>
+
+        {/* ── Bottom controls bar — two rows, z-30 above overlay ── */}
+        <div
+          className="absolute z-30"
+          style={{
+            bottom: 0,
+            left: 0,
+            right: 0,
+            paddingBottom: "env(safe-area-inset-bottom)",
+            background: "rgba(10, 7, 4, 0.72)",
+            backdropFilter: "blur(18px)",
+            WebkitBackdropFilter: "blur(18px)",
+            borderTop: "1px solid rgba(255,255,255,0.055)",
+          }}
+        >
+          {/* Row 1 — action buttons */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "12px",
+              padding: "10px 16px 6px",
+            }}
+          >
+            {role === "participant" ? (
+              <>
+                <ControlBtn onClick={handleToggleMute} active={muted} title={muted ? "Unmute" : "Mute mic"}>
+                  {muted ? (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 9.75L19.5 12m0 0l2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+                    </svg>
+                  ) : (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+                    </svg>
+                  )}
+                </ControlBtn>
+                <ControlBtn onClick={handleToggleCamera} active={cameraOff} title={cameraOff ? "Turn camera on" : "Turn camera off"}>
+                  {cameraOff ? (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M12 18.75H4.5a2.25 2.25 0 01-2.25-2.25V9m12.841 8.909L6.75 6.75m0 0L4.5 4.5M6.75 6.75l-.75-.75" />
+                    </svg>
+                  ) : (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9A2.25 2.25 0 0013.5 5.25h-9A2.25 2.25 0 002.25 7.5v9A2.25 2.25 0 004.5 18.75z" />
+                    </svg>
+                  )}
+                </ControlBtn>
+                <ControlBtn onClick={handleLeaveSeat} active={false} title="Leave seat" danger>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
+                  </svg>
+                </ControlBtn>
+                <ControlBtn onClick={handleLeaveRoom} active={false} title="Leave room" severe>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5.636 5.636a9 9 0 1012.728 12.728M12 3v9m0 0l3-3m-3 3L9 9" />
+                  </svg>
+                </ControlBtn>
+              </>
+            ) : (
+              /* Audience row 1 */
+              <>
+                {seatsAvailable && (
+                  <button
+                    onClick={handleTakeSeat}
+                    style={{
+                      height: "40px",
+                      padding: "0 20px",
+                      borderRadius: "20px",
+                      background: "transparent",
+                      border: "1px solid rgba(200, 155, 85, 0.28)",
+                      color: "rgba(225, 185, 130, 0.75)",
+                      fontSize: "13px",
+                      letterSpacing: "0.04em",
+                      cursor: "pointer",
+                      WebkitTapHighlightColor: "transparent",
+                    }}
+                  >
+                    join seat
+                  </button>
+                )}
+                <button
+                  onClick={handleLeaveRoom}
+                  style={{
+                    height: "40px",
+                    padding: "0 20px",
+                    borderRadius: "20px",
+                    background: "transparent",
+                    border: "1px solid rgba(160, 60, 40, 0.25)",
+                    color: "rgba(210, 100, 75, 0.6)",
+                    fontSize: "13px",
+                    letterSpacing: "0.04em",
+                    cursor: "pointer",
+                    WebkitTapHighlightColor: "transparent",
+                  }}
+                >
+                  leave room
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* Row 2 — TikTok-style chat bar */}
+          <MobileChatBar
+            draft={mobileChatDraft}
+            onDraftChange={setMobileChatDraft}
+            onSend={() => {
+              const text = mobileChatDraft.trim();
+              if (!text) return;
+              handleSendChat(text);
+              setMobileChatDraft("");
+            }}
+            chatOpen={mobileChatExpanded}
+            onToggleChat={() => setMobileChatExpanded((v) => !v)}
+          />
+        </div>
+
+        {/* Mobile chat overlay — z-22/23 so controls (z-30) remain on top */}
+        <MobileChatOverlay
+          items={feedItems}
+          myName={localName}
+          role={role}
+          seatsAvailable={seatsAvailable}
+          onSend={handleSendChat}
+          onTakeSeat={handleTakeSeat}
+          onLeaveRoom={handleLeaveRoom}
+          expanded={mobileChatExpanded}
+          onExpand={() => setMobileChatExpanded(true)}
+          onCollapse={() => setMobileChatExpanded(false)}
+          controlsHeight={124}
+        />
+      </div>
+    );
+  }
+
+  // ── Desktop layout ─────────────────────────────────────────────────────────
   return (
     <div
       className="relative overflow-hidden"
@@ -485,7 +682,6 @@ export default function App() {
           style={iconBtn}
         >
           {view === "grid" ? (
-            // Circle icon
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
               <circle cx="12" cy="12" r="9" />
               <circle cx="12" cy="3" r="1.5" fill="currentColor" stroke="none" />
@@ -494,7 +690,6 @@ export default function App() {
               <circle cx="21" cy="12" r="1.5" fill="currentColor" stroke="none" />
             </svg>
           ) : (
-            // Grid icon
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
               <rect x="3" y="3" width="7" height="7" rx="1" />
               <rect x="14" y="3" width="7" height="7" rx="1" />
@@ -510,9 +705,7 @@ export default function App() {
           title={chatOpen ? "Close chat" : "Open chat"}
           style={{
             ...iconBtn,
-            color: chatOpen
-              ? "rgba(220,185,130,0.75)"
-              : "rgba(200,165,115,0.4)",
+            color: chatOpen ? "rgba(220,185,130,0.75)" : "rgba(200,165,115,0.4)",
           }}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -649,7 +842,6 @@ export default function App() {
             )}
           </ControlBtn>
 
-          {/* Leave seat (step back to audience) */}
           <ControlBtn
             onClick={handleLeaveSeat}
             active={false}
@@ -662,7 +854,6 @@ export default function App() {
             </svg>
           </ControlBtn>
 
-          {/* Leave room entirely */}
           <ControlBtn
             onClick={handleLeaveRoom}
             active={false}
@@ -765,5 +956,135 @@ function ControlBtn({
     >
       {children}
     </button>
+  );
+}
+
+// ─── Mobile chat bar (TikTok-style row 2) ───────────────────────────────────
+
+function MobileChatBar({
+  draft,
+  onDraftChange,
+  onSend,
+  chatOpen,
+  onToggleChat,
+}: {
+  draft: string;
+  onDraftChange: (v: string) => void;
+  onSend: () => void;
+  chatOpen: boolean;
+  onToggleChat: () => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "8px",
+        padding: "4px 12px 12px",
+      }}
+    >
+      {/* Chat open / close button */}
+      <button
+        onClick={onToggleChat}
+        title={chatOpen ? "Close chat" : "Open chat"}
+        style={{
+          flexShrink: 0,
+          width: "40px",
+          height: "40px",
+          borderRadius: "50%",
+          background: chatOpen
+            ? "rgba(210, 165, 90, 0.18)"
+            : "rgba(255,255,255,0.06)",
+          border: chatOpen
+            ? "1px solid rgba(210,165,90,0.3)"
+            : "1px solid rgba(255,255,255,0.1)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: chatOpen
+            ? "rgba(220, 175, 100, 0.9)"
+            : "rgba(200, 165, 115, 0.5)",
+          cursor: "pointer",
+          transition: "background 0.25s ease, color 0.25s ease, border-color 0.25s ease",
+          WebkitTapHighlightColor: "transparent",
+        }}
+      >
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+          <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
+        </svg>
+      </button>
+
+      {/* Text input pill */}
+      <div
+        style={{
+          flex: 1,
+          position: "relative",
+          display: "flex",
+          alignItems: "center",
+        }}
+      >
+        <input
+          type="text"
+          placeholder="say something…"
+          maxLength={1000}
+          value={draft}
+          onChange={(e) => onDraftChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              onSend();
+            }
+          }}
+          className="fire-input"
+          style={{
+            width: "100%",
+            background: "rgba(255,255,255,0.07)",
+            border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: "20px",
+            padding: "9px 40px 9px 16px",
+            color: "rgba(232, 200, 160, 0.88)",
+            fontSize: "14px",
+            caretColor: "rgba(220,175,115,0.8)",
+            outline: "none",
+            transition: "border-color 0.3s ease, background 0.3s ease",
+            boxSizing: "border-box",
+          }}
+          onFocus={(e) => {
+            (e.target as HTMLInputElement).style.borderColor = "rgba(200,155,85,0.35)";
+            (e.target as HTMLInputElement).style.background = "rgba(255,255,255,0.1)";
+          }}
+          onBlur={(e) => {
+            (e.target as HTMLInputElement).style.borderColor = "rgba(255,255,255,0.1)";
+            (e.target as HTMLInputElement).style.background = "rgba(255,255,255,0.07)";
+          }}
+        />
+        {/* Send button — only visible when draft has content */}
+        {draft.trim().length > 0 && (
+          <button
+            onClick={onSend}
+            style={{
+              position: "absolute",
+              right: "6px",
+              width: "30px",
+              height: "30px",
+              borderRadius: "50%",
+              background: "rgba(210, 160, 80, 0.22)",
+              border: "none",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "rgba(225, 185, 110, 0.9)",
+              cursor: "pointer",
+              WebkitTapHighlightColor: "transparent",
+              animation: "float-up 0.22s ease-out both",
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+            </svg>
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
