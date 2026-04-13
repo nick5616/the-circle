@@ -148,6 +148,7 @@ export default function App() {
   const offeredTo = useRef<Set<string>>(new Set());
   const roomStateRef = useRef<RoomState | null>(null);
   const prevSeatsRef = useRef<Array<Seat | null> | null>(null);
+  const joinedRef = useRef(false);
 
   // Computed streams map with __local__ replaced by real session id
   const gridStreams = useMemo(() => {
@@ -238,22 +239,24 @@ export default function App() {
         roomStateRef.current = msg.payload;
         setRoomState(msg.payload);
 
-        if (msg.payload.your_role === "participant") {
-          for (const seat of msg.payload.seats) {
-            if (!seat) continue;
-            if (seat.session_id === msg.payload.your_session_id) continue;
-            if (offeredTo.current.has(seat.session_id)) continue;
-            offeredTo.current.add(seat.session_id);
-            if (msg.payload.your_session_id < seat.session_id) {
+        if (joinedRef.current) {
+          if (msg.payload.your_role === "participant") {
+            for (const seat of msg.payload.seats) {
+              if (!seat) continue;
+              if (seat.session_id === msg.payload.your_session_id) continue;
+              if (offeredTo.current.has(seat.session_id)) continue;
+              offeredTo.current.add(seat.session_id);
+              if (msg.payload.your_session_id < seat.session_id) {
+                await webrtc.createOffer(seat.session_id);
+              }
+            }
+          } else if (msg.payload.your_role === "audience") {
+            for (const seat of msg.payload.seats) {
+              if (!seat) continue;
+              if (offeredTo.current.has(seat.session_id)) continue;
+              offeredTo.current.add(seat.session_id);
               await webrtc.createOffer(seat.session_id);
             }
-          }
-        } else if (msg.payload.your_role === "audience") {
-          for (const seat of msg.payload.seats) {
-            if (!seat) continue;
-            if (offeredTo.current.has(seat.session_id)) continue;
-            offeredTo.current.add(seat.session_id);
-            await webrtc.createOffer(seat.session_id);
           }
         }
 
@@ -342,6 +345,7 @@ export default function App() {
     const unsub = socket.onMessage(async (msg: ServerMessage) => {
       if (msg.type !== "room_state") return;
       unsub();
+      joinedRef.current = true;
       roomStateRef.current = msg.payload;
       prevSeatsRef.current = msg.payload.seats; // seed — no events for initial state
       setRoomState(msg.payload);

@@ -23,7 +23,7 @@ export default function VideoTile({
 }: Props) {
   const color = name ? hashNameToColor(name) : null;
 
-  const isSpeaking = audioLevel > 0.1;
+  const isSpeaking = audioLevel > 0.15;
 
   const videoRef = useCallback(
     (el: HTMLVideoElement | null) => {
@@ -32,15 +32,21 @@ export default function VideoTile({
     [stream]
   );
 
-  const glowBase = color
-    ? `0 0 0 1.5px ${color.hex}38, 0 0 18px 4px ${color.hex}16`
-    : "none";
-  const glowSpeaking = color
-    ? `0 0 0 2.5px ${color.hex}90, 0 0 36px 10px ${color.hex}45`
+  // All visual effects scale continuously with audioLevel (0–1).
+  // Silence: faint base ring + no outer glow. Loud: prominent ring + wide glow.
+  const ringWidth = color ? (1.5 + audioLevel * 1).toFixed(2) : "0";
+  const ringAlpha = color ? toHex2(38 + audioLevel * (144 - 38)) : "00";
+  const outerBlur = (18 + audioLevel * 18).toFixed(1);
+  const outerSpread = (4 + audioLevel * 6).toFixed(1);
+  const outerAlpha = color ? toHex2(22 + audioLevel * 47) : "00";
+  const boxShadow = color
+    ? `0 0 0 ${ringWidth}px ${color.hex}${ringAlpha}, 0 0 ${outerBlur}px ${outerSpread}px ${color.hex}${outerAlpha}`
     : "none";
 
-  // Inset glow alpha scales linearly with perceptual level.
-  // Geometry is fixed so it stays near the edges (18px blur, 4px spread).
+  // Scale grows with loudness, capped at the speaking max.
+  const scale = (1 + audioLevel * 0.024).toFixed(4);
+
+  // Inset glow alpha scales with perceptual level.
   const insetAlpha = color ? toHex2(audioLevel * 0.82 * 255) : "00";
 
   return (
@@ -49,8 +55,8 @@ export default function VideoTile({
       style={{
         borderRadius: "11px",
         backgroundColor: "#0e0a07",
-        boxShadow: isSpeaking ? glowSpeaking : glowBase,
-        transform: isSpeaking ? "scale(1.024)" : "scale(1)",
+        boxShadow,
+        transform: `scale(${scale})`,
         transition:
           "box-shadow 0.28s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)",
         zIndex: isSpeaking ? 1 : 0,
