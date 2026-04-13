@@ -11,7 +11,8 @@ export const socket = {
     if (ws && ws.readyState < WebSocket.CLOSING) return;
 
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(`${protocol}://${location.host}/ws/room/`);
+    const wsBase = import.meta.env.VITE_WS_URL ?? `${protocol}://${location.host}`;
+    ws = new WebSocket(`${wsBase}/ws/room/`);
 
     ws.addEventListener("open", () => {
       // Flush any messages that were sent before the socket opened

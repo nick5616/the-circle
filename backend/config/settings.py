@@ -7,7 +7,12 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 
 DEBUG = os.environ.get("DEBUG", "true").lower() == "true"
 
-ALLOWED_HOSTS = ["*"]
+_allowed = os.environ.get("ALLOWED_HOSTS", "*")
+ALLOWED_HOSTS = [h.strip() for h in _allowed.split(",")]
+
+# Origins allowed to open WebSocket connections (comma-separated)
+_ws_origins = os.environ.get("ALLOWED_WS_ORIGINS", "")
+ALLOWED_WS_ORIGINS = [o.strip() for o in _ws_origins.split(",") if o.strip()]
 
 INSTALLED_APPS = [
     "django.contrib.staticfiles",
