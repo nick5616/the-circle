@@ -55,6 +55,14 @@
   to   { transform: translateY(0);    opacity: 1; }
 }
 
+/* Back-loaded 5-second chat message fade: stays opaque most of the time,
+   then accelerates toward invisible near the end.                          */
+@keyframes chat-expire {
+  0%,  55% { opacity: 1;   }
+  85%      { opacity: 0.25; }
+  100%     { opacity: 0;   }
+}
+
 /* ------------------------------------------------------------------ */
 /* Utility animation classes                                            */
 /* ------------------------------------------------------------------ */

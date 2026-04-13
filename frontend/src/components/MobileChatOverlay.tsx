@@ -1,20 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import type { FeedItem, Role } from "../types";
+import type { FeedItem } from "../types";
 import { hashNameToColor } from "../fireColors";
 
 interface Props {
   items: FeedItem[];
   myName: string;
-  role: Role;
-  seatsAvailable: boolean;
-  onSend: (content: string) => void;
-  onTakeSeat: () => void;
-  onLeaveRoom: () => void;
-  // Controlled expanded state — lifted to parent so the bottom bar can drive it
   expanded: boolean;
   onExpand: () => void;
   onCollapse: () => void;
-  // Height of the bottom controls bar so toasts / overlay don't overlap it
+  onSend: (text: string) => void;
+  // Height of the footer row (px, excluding safe area) so toast strip and sheet clear it
+  chatBarHeight?: number;
   controlsHeight?: number;
 }
 
@@ -111,26 +107,26 @@ function ToastBubble({ toast }: { toast: Toast }) {
 export default function MobileChatOverlay({
   items,
   myName,
-  role,
-  seatsAvailable,
-  onSend,
-  onTakeSeat,
-  onLeaveRoom,
   expanded,
   onExpand,
   onCollapse,
-  controlsHeight = 130,
+  onSend,
+  chatBarHeight,
+  controlsHeight,
 }: Props) {
-  const [toasts, setToasts] = useState<Toast[]>([]);
+  const barH = chatBarHeight ?? controlsHeight ?? 0;
   const [draft, setDraft] = useState("");
-  const [inputFocused, setInputFocused] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevLengthRef = useRef(0);
   const seededRef = useRef(false);
   // Maps toast id → [fadeTimer, removeTimer] so we can cancel on unmount
   const timerMapRef = useRef<Map<string, ReturnType<typeof setTimeout>[]>>(new Map());
-  const myColor = myName ? hashNameToColor(myName) : null;
+  // Swipe-down tracking
+  const touchStartY = useRef<number | null>(null);
+
+  void myName; // kept in props for future per-user styling
 
   // Auto-scroll expanded feed to bottom when new messages arrive
   useEffect(() => {
@@ -218,13 +214,6 @@ export default function MobileChatOverlay({
     };
   }, []);
 
-  function submit() {
-    const text = draft.trim();
-    if (!text) return;
-    onSend(text);
-    setDraft("");
-  }
-
   const visibleToasts = toasts.slice(-2);
 
   return (
@@ -236,7 +225,7 @@ export default function MobileChatOverlay({
             position: "fixed",
             left: 0,
             right: 0,
-            bottom: `${controlsHeight + 8}px`,
+            bottom: `calc(${barH}px + env(safe-area-inset-bottom) + 8px)`,
             zIndex: 22,
             padding: "0 12px",
             display: "flex",
@@ -255,51 +244,59 @@ export default function MobileChatOverlay({
         </div>
       )}
 
-      {/* Expanded overlay */}
+      {/* Expanded overlay — covers full screen bottom (including controls) */}
       {expanded && (
         <>
-          {/* Tap-to-close zone — top portion of screen */}
+          {/* Tap-to-close zone — top 40% of screen above the sheet */}
           <div
             style={{
               position: "fixed",
               top: 0,
               left: 0,
               right: 0,
-              height: "45%",
-              zIndex: 24,
+              height: "40%",
+              zIndex: 36,
               cursor: "pointer",
-              // Subtle visual hint that tapping here closes
-              background: "transparent",
             }}
             onClick={() => onCollapse()}
           />
 
-          {/* Chat overlay panel — bottom 55% of screen, above controls */}
+          {/* Sheet — slides up, covers action buttons (z-35) but stops above chat bar */}
           <div
             style={{
               position: "fixed",
-              top: "45%",
+              top: "40%",
               left: 0,
               right: 0,
-              bottom: `${controlsHeight}px`,
-              zIndex: 23,
-              background: "rgba(10, 7, 4, 0.86)",
-              backdropFilter: "blur(28px)",
-              WebkitBackdropFilter: "blur(28px)",
-              borderRadius: "18px 18px 0 0",
+              bottom: `calc(${barH}px + env(safe-area-inset-bottom))`,
+              zIndex: 35,
+              background: "rgba(10, 7, 4, 0.1)",
+              backdropFilter: "blur(16px)",
+              WebkitBackdropFilter: "blur(16px)",
+              borderRadius: "20px 20px 0 0",
               display: "flex",
               flexDirection: "column",
               overflow: "hidden",
-              boxShadow: "0 -12px 48px rgba(0,0,0,0.55)",
+              boxShadow: "0 -16px 56px rgba(0,0,0,0.6)",
               animation: "slide-up-overlay 0.32s cubic-bezier(0.34, 1.2, 0.64, 1) both",
             }}
+            onTouchStart={(e) => {
+              touchStartY.current = e.touches[0].clientY;
+            }}
+            onTouchEnd={(e) => {
+              if (touchStartY.current !== null) {
+                const delta = e.changedTouches[0].clientY - touchStartY.current;
+                if (delta > 60) onCollapse();
+              }
+              touchStartY.current = null;
+            }}
           >
-            {/* Drag handle */}
+            {/* Drag handle — tap or swipe down to dismiss */}
             <div
               style={{
                 display: "flex",
                 justifyContent: "center",
-                padding: "10px 0 6px",
+                padding: "12px 0 8px",
                 flexShrink: 0,
                 cursor: "pointer",
               }}
@@ -307,7 +304,7 @@ export default function MobileChatOverlay({
             >
               <div
                 style={{
-                  width: "38px",
+                  width: "40px",
                   height: "4px",
                   borderRadius: "2px",
                   background: "rgba(220, 180, 130, 0.22)",
@@ -320,7 +317,7 @@ export default function MobileChatOverlay({
               style={{
                 flex: 1,
                 overflowY: "auto",
-                padding: "4px 16px 8px",
+                padding: "4px 16px 16px",
                 display: "flex",
                 flexDirection: "column",
                 gap: "12px",
@@ -353,46 +350,15 @@ export default function MobileChatOverlay({
             <div
               style={{
                 flexShrink: 0,
-                padding: "10px 16px 14px",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                padding: "8px 12px 14px",
                 borderTop: "1px solid rgba(255,255,255,0.055)",
+                background: "rgba(8, 5, 3, 0.5)",
               }}
             >
-              {role === "audience" && (
-                <div style={{ display: "flex", gap: "12px", marginBottom: "10px" }}>
-                  {seatsAvailable && (
-                    <button
-                      onClick={onTakeSeat}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "rgba(210, 175, 120, 0.5)",
-                        fontSize: "12px",
-                        letterSpacing: "0.04em",
-                        cursor: "pointer",
-                        padding: 0,
-                      }}
-                    >
-                      take a seat
-                    </button>
-                  )}
-                  <button
-                    onClick={onLeaveRoom}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      color: "rgba(180, 130, 85, 0.35)",
-                      fontSize: "12px",
-                      letterSpacing: "0.04em",
-                      cursor: "pointer",
-                      padding: 0,
-                      marginLeft: "auto",
-                    }}
-                  >
-                    leave room
-                  </button>
-                </div>
-              )}
-              <div style={{ position: "relative" }}>
+              <div style={{ flex: 1, position: "relative", display: "flex", alignItems: "center" }}>
                 <input
                   type="text"
                   placeholder="say something…"
@@ -402,40 +368,51 @@ export default function MobileChatOverlay({
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
-                      submit();
+                      const text = draft.trim();
+                      if (text) { onSend(text); setDraft(""); }
                     }
                   }}
-                  onFocus={() => setInputFocused(true)}
-                  onBlur={() => setInputFocused(false)}
-                  className="fire-input w-full"
+                  className="fire-input"
                   style={{
-                    background: "transparent",
-                    border: "none",
-                    borderBottom: `1px solid ${
-                      inputFocused && myColor
-                        ? myColor.hex + "55"
-                        : "rgba(255,255,255,0.08)"
-                    }`,
-                    padding: "8px 0 9px",
-                    color: "rgba(232, 200, 160, 0.88)",
-                    fontSize: "15px",
-                    caretColor: myColor ? myColor.hex : "rgba(220,175,115,0.7)",
-                    transition: "border-color 0.4s ease",
                     width: "100%",
+                    background: "rgba(255,255,255,0.07)",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    borderRadius: "20px",
+                    padding: "9px 40px 9px 16px",
+                    color: "rgba(232, 200, 160, 0.88)",
+                    fontSize: "14px",
+                    caretColor: "rgba(220,175,115,0.8)",
+                    outline: "none",
+                    boxSizing: "border-box",
+                    transition: "border-color 0.3s ease",
                   }}
+                  onFocus={(e) => { (e.target as HTMLInputElement).style.borderColor = "rgba(200,155,85,0.35)"; }}
+                  onBlur={(e) => { (e.target as HTMLInputElement).style.borderColor = "rgba(255,255,255,0.1)"; }}
                 />
-                {inputFocused && myColor && (
-                  <div
+                {draft.trim().length > 0 && (
+                  <button
+                    onClick={() => { const text = draft.trim(); if (text) { onSend(text); setDraft(""); } }}
                     style={{
                       position: "absolute",
-                      bottom: 0,
-                      left: 0,
-                      right: 0,
-                      height: "1px",
-                      background: `linear-gradient(90deg, transparent, ${myColor.hex}55, transparent)`,
-                      pointerEvents: "none",
+                      right: "6px",
+                      width: "30px",
+                      height: "30px",
+                      borderRadius: "50%",
+                      background: "rgba(210, 160, 80, 0.22)",
+                      border: "none",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "rgba(225, 185, 110, 0.9)",
+                      cursor: "pointer",
+                      WebkitTapHighlightColor: "transparent",
+                      animation: "float-up 0.22s ease-out both",
                     }}
-                  />
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                    </svg>
+                  </button>
                 )}
               </div>
             </div>

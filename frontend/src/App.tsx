@@ -141,12 +141,8 @@ export default function App() {
     () => new Map()
   );
   const [view, setView] = useState<"grid" | "circle">("grid");
-  const [chatOpen, setChatOpen] = useState(
-    () => typeof window !== "undefined" && window.innerWidth >= 1024
-  );
   const [localName, setLocalName] = useState("");
   const [mobileChatExpanded, setMobileChatExpanded] = useState(false);
-  const [mobileChatDraft, setMobileChatDraft] = useState("");
 
   const localStreamRef = useRef<MediaStream | null>(null);
   const offeredTo = useRef<Set<string>>(new Set());
@@ -507,7 +503,7 @@ export default function App() {
           />
         </div>
 
-        {/* ── Bottom controls bar — two rows, z-30 above overlay ── */}
+        {/* ── Single footer row — z-30, sheet (z-35) covers it when chat is open ── */}
         <div
           className="absolute z-30"
           style={{
@@ -521,14 +517,13 @@ export default function App() {
             borderTop: "1px solid rgba(255,255,255,0.055)",
           }}
         >
-          {/* Row 1 — action buttons */}
           <div
             style={{
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               gap: "12px",
-              padding: "10px 16px 6px",
+              padding: "10px 16px 10px",
             }}
           >
             {role === "participant" ? (
@@ -567,7 +562,6 @@ export default function App() {
                 </ControlBtn>
               </>
             ) : (
-              /* Audience row 1 */
               <>
                 {seatsAvailable && (
                   <button
@@ -607,36 +601,28 @@ export default function App() {
                 </button>
               </>
             )}
-          </div>
 
-          {/* Row 2 — TikTok-style chat bar */}
-          <MobileChatBar
-            draft={mobileChatDraft}
-            onDraftChange={setMobileChatDraft}
-            onSend={() => {
-              const text = mobileChatDraft.trim();
-              if (!text) return;
-              handleSendChat(text);
-              setMobileChatDraft("");
-            }}
-            chatOpen={mobileChatExpanded}
-            onToggleChat={() => setMobileChatExpanded((v) => !v)}
-          />
+            {/* Chat toggle — same row as other controls */}
+            <ControlBtn
+              onClick={() => setMobileChatExpanded((v) => !v)}
+              active={mobileChatExpanded}
+              title={mobileChatExpanded ? "Close chat" : "Open chat"}
+            >
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+                <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
+              </svg>
+            </ControlBtn>
+          </div>
         </div>
 
-        {/* Mobile chat overlay — z-22/23 so controls (z-30) remain on top */}
+        {/* Mobile chat overlay — sheet (z-35) covers full footer when open */}
         <MobileChatOverlay
           items={feedItems}
           myName={localName}
-          role={role}
-          seatsAvailable={seatsAvailable}
-          onSend={handleSendChat}
-          onTakeSeat={handleTakeSeat}
-          onLeaveRoom={handleLeaveRoom}
           expanded={mobileChatExpanded}
           onExpand={() => setMobileChatExpanded(true)}
           onCollapse={() => setMobileChatExpanded(false)}
-          controlsHeight={124}
+          onSend={handleSendChat}
         />
       </div>
     );
@@ -661,13 +647,12 @@ export default function App() {
         }}
       />
 
-      {/* Top-right icon cluster */}
+      {/* Top-right icon cluster — view toggle only; chat is always-on overlay */}
       <div
         className="absolute z-30 flex items-center gap-1"
         style={{
           top: "14px",
-          right: chatOpen ? "292px" : "14px",
-          transition: "right 0.42s cubic-bezier(0.25, 1, 0.5, 1)",
+          right: "14px",
           background: "rgba(8, 5, 3, 0.78)",
           backdropFilter: "blur(14px)",
           borderRadius: "999px",
@@ -675,7 +660,6 @@ export default function App() {
           border: "1px solid rgba(255,255,255,0.07)",
         }}
       >
-        {/* View toggle */}
         <button
           onClick={() => setView((v) => (v === "grid" ? "circle" : "grid"))}
           title={view === "grid" ? "Circle view" : "Grid view"}
@@ -698,33 +682,10 @@ export default function App() {
             </svg>
           )}
         </button>
-
-        {/* Chat toggle */}
-        <button
-          onClick={() => setChatOpen((o) => !o)}
-          title={chatOpen ? "Close chat" : "Open chat"}
-          style={{
-            ...iconBtn,
-            color: chatOpen ? "rgba(220,185,130,0.75)" : "rgba(200,165,115,0.4)",
-          }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
-          </svg>
-        </button>
       </div>
 
-      {/* Video — fills canvas except where chat overlaps */}
-      <div
-        className="absolute"
-        style={{
-          top: 0,
-          left: 0,
-          bottom: 0,
-          right: chatOpen ? 276 : 0,
-          transition: "right 0.42s cubic-bezier(0.25, 1, 0.5, 1)",
-        }}
-      >
+      {/* Video — always full canvas; chat floats over as transparent overlay */}
+      <div className="absolute inset-0">
         <VideoGrid
           seats={roomState.seats}
           streams={gridStreams}
@@ -868,15 +829,10 @@ export default function App() {
         </div>
       )}
 
-      {/* Chat panel — overlays right side */}
+      {/* Chat — always-visible transparent overlay on the right */}
       <div
         className="absolute top-0 right-0 h-full z-20"
-        style={{
-          width: "276px",
-          transform: chatOpen ? "translateX(0)" : "translateX(100%)",
-          transition: "transform 0.38s cubic-bezier(0.25, 1, 0.5, 1)",
-          pointerEvents: chatOpen ? "auto" : "none",
-        }}
+        style={{ width: "276px" }}
       >
         <Chat
           items={feedItems}
@@ -886,6 +842,7 @@ export default function App() {
           onSend={handleSendChat}
           onTakeSeat={handleTakeSeat}
           onLeaveRoom={handleLeaveRoom}
+          transparent
         />
       </div>
     </div>
@@ -959,132 +916,3 @@ function ControlBtn({
   );
 }
 
-// ─── Mobile chat bar (TikTok-style row 2) ───────────────────────────────────
-
-function MobileChatBar({
-  draft,
-  onDraftChange,
-  onSend,
-  chatOpen,
-  onToggleChat,
-}: {
-  draft: string;
-  onDraftChange: (v: string) => void;
-  onSend: () => void;
-  chatOpen: boolean;
-  onToggleChat: () => void;
-}) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "8px",
-        padding: "4px 12px 12px",
-      }}
-    >
-      {/* Chat open / close button */}
-      <button
-        onClick={onToggleChat}
-        title={chatOpen ? "Close chat" : "Open chat"}
-        style={{
-          flexShrink: 0,
-          width: "40px",
-          height: "40px",
-          borderRadius: "50%",
-          background: chatOpen
-            ? "rgba(210, 165, 90, 0.18)"
-            : "rgba(255,255,255,0.06)",
-          border: chatOpen
-            ? "1px solid rgba(210,165,90,0.3)"
-            : "1px solid rgba(255,255,255,0.1)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: chatOpen
-            ? "rgba(220, 175, 100, 0.9)"
-            : "rgba(200, 165, 115, 0.5)",
-          cursor: "pointer",
-          transition: "background 0.25s ease, color 0.25s ease, border-color 0.25s ease",
-          WebkitTapHighlightColor: "transparent",
-        }}
-      >
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-          <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
-        </svg>
-      </button>
-
-      {/* Text input pill */}
-      <div
-        style={{
-          flex: 1,
-          position: "relative",
-          display: "flex",
-          alignItems: "center",
-        }}
-      >
-        <input
-          type="text"
-          placeholder="say something…"
-          maxLength={1000}
-          value={draft}
-          onChange={(e) => onDraftChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              onSend();
-            }
-          }}
-          className="fire-input"
-          style={{
-            width: "100%",
-            background: "rgba(255,255,255,0.07)",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: "20px",
-            padding: "9px 40px 9px 16px",
-            color: "rgba(232, 200, 160, 0.88)",
-            fontSize: "14px",
-            caretColor: "rgba(220,175,115,0.8)",
-            outline: "none",
-            transition: "border-color 0.3s ease, background 0.3s ease",
-            boxSizing: "border-box",
-          }}
-          onFocus={(e) => {
-            (e.target as HTMLInputElement).style.borderColor = "rgba(200,155,85,0.35)";
-            (e.target as HTMLInputElement).style.background = "rgba(255,255,255,0.1)";
-          }}
-          onBlur={(e) => {
-            (e.target as HTMLInputElement).style.borderColor = "rgba(255,255,255,0.1)";
-            (e.target as HTMLInputElement).style.background = "rgba(255,255,255,0.07)";
-          }}
-        />
-        {/* Send button — only visible when draft has content */}
-        {draft.trim().length > 0 && (
-          <button
-            onClick={onSend}
-            style={{
-              position: "absolute",
-              right: "6px",
-              width: "30px",
-              height: "30px",
-              borderRadius: "50%",
-              background: "rgba(210, 160, 80, 0.22)",
-              border: "none",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "rgba(225, 185, 110, 0.9)",
-              cursor: "pointer",
-              WebkitTapHighlightColor: "transparent",
-              animation: "float-up 0.22s ease-out both",
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-            </svg>
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
