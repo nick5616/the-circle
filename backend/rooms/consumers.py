@@ -1,4 +1,5 @@
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -9,6 +10,9 @@ from django.conf import settings
 from . import room_state as rs
 
 GROUP_NAME = "global_room"
+
+# Max WebRTC signal messages (offer/answer/ice) per connection per second
+_SIGNAL_RATE_LIMIT = 30
 
 
 def _now() -> str:
@@ -31,6 +35,9 @@ class RoomConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.session_id = str(uuid.uuid4())
         self.role = None  # set during handle_join
+        # Sliding-window rate limiter state for WebRTC signaling messages
+        self._signal_window_start = time.monotonic()
+        self._signal_count = 0
         self.redis = aioredis.from_url(
             settings.CHANNEL_LAYERS["default"]["CONFIG"]["hosts"][0],
             decode_responses=False,
@@ -137,12 +144,18 @@ class RoomConsumer(AsyncWebsocketConsumer):
         )
 
     async def handle_offer(self, payload: dict):
+        if not self._check_signal_rate():
+            return
         await self._forward_signal("offer", payload)
 
     async def handle_answer(self, payload: dict):
+        if not self._check_signal_rate():
+            return
         await self._forward_signal("answer", payload)
 
     async def handle_ice(self, payload: dict):
+        if not self._check_signal_rate():
+            return
         await self._forward_signal("ice", payload)
 
     async def handle_take_seat(self, payload: dict):
@@ -249,6 +262,18 @@ class RoomConsumer(AsyncWebsocketConsumer):
             GROUP_NAME,
             {"type": "broadcast_room_state", "payload": payload},
         )
+
+    def _check_signal_rate(self) -> bool:
+        """
+        Sliding 1-second window: allow up to _SIGNAL_RATE_LIMIT signal messages
+        per connection per second.  Returns True if the message should proceed.
+        """
+        now = time.monotonic()
+        if now - self._signal_window_start >= 1.0:
+            self._signal_window_start = now
+            self._signal_count = 0
+        self._signal_count += 1
+        return self._signal_count <= _SIGNAL_RATE_LIMIT
 
     async def _forward_signal(self, signal_type: str, payload: dict):
         """Route an offer/answer/ice message to the target peer by session_id."""

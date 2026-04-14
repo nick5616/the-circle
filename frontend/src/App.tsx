@@ -147,6 +147,7 @@ export default function App() {
   const localStreamRef = useRef<MediaStream | null>(null);
   const offeredTo = useRef<Set<string>>(new Set());
   const roomStateRef = useRef<RoomState | null>(null);
+  const iceServersLoadedRef = useRef(false);
   const prevSeatsRef = useRef<Array<Seat | null> | null>(null);
   const joinedRef = useRef(false);
 
@@ -202,6 +203,23 @@ export default function App() {
     prevSeatsRef.current = curr;
   }, [roomState, joined]);
 
+  // ── Fetch ICE server config from backend (keeps TURN creds out of the bundle)
+  useEffect(() => {
+    if (iceServersLoadedRef.current) return;
+    iceServersLoadedRef.current = true;
+    const apiBase = import.meta.env.VITE_API_URL ?? "";
+    fetch(`${apiBase}/api/ice-servers/`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data.iceServers) && data.iceServers.length > 0) {
+          webrtc.setIceServers(data.iceServers);
+        }
+      })
+      .catch(() => {
+        // Non-fatal: fall back to the default STUN-only config
+      });
+  }, []);
+
   // ── WebRTC stream callback ─────────────────────────────────────────────────
   useEffect(() => {
     webrtc.setStreamCallback((sessionId, stream) => {
@@ -221,13 +239,18 @@ export default function App() {
       if (!state) return;
       const stillInRoom = state.seats.some((s) => s?.session_id === sessionId);
       if (!stillInRoom) return;
-      // Reset tracking so the offer logic can re-run for this peer
+      // Clear tracking so room_state handler can re-run the offer logic if needed.
+      // Do NOT re-add here — the offer below (or the remote peer's offer) covers it.
       offeredTo.current.delete(sessionId);
-      offeredTo.current.add(sessionId);
-      // Only the lower session_id re-initiates to avoid both sides offering
+      // Only the lower session_id re-initiates to avoid both sides offering.
+      // The higher-id peer leaves offeredTo clear so if a room_state arrives before
+      // the lower-id peer's re-offer does, it won't try to offer (avoiding a race).
       if (state.your_session_id < sessionId) {
+        offeredTo.current.add(sessionId); // mark so room_state doesn't double-offer
         webrtc.createOffer(sessionId);
       }
+      // If we're the higher-id peer: offeredTo stays clear. When the lower-id peer
+      // re-offers, handleOffer tears down the dead connection and rebuilds it.
     });
   }, []);
 

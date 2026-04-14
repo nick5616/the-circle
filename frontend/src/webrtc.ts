@@ -8,8 +8,14 @@ const iceQueues = new Map<string, RTCIceCandidateInit[]>();
 // Session IDs that were deliberately closed by us — don't fire disconnect callbacks for these
 const intentionallyClosed = new Set<string>();
 
+// Timers used to detect persistent "disconnected" ICE state and force a reconnect
+const disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 // Called by App to hand the local stream in after getUserMedia
 let _localStream: MediaStream | null = null;
+
+// ICE server config fetched from /api/ice-servers/ at startup
+let _iceServers: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 
 // Called by App when remote streams arrive/leave; App subscribes via onStream
 type StreamCallback = (sessionId: string, stream: MediaStream | null) => void;
@@ -19,13 +25,20 @@ let _onStream: StreamCallback = () => {};
 type DisconnectCallback = (sessionId: string) => void;
 let _onDisconnect: DisconnectCallback = () => {};
 
+function clearDisconnectTimer(remoteId: string): void {
+  const t = disconnectTimers.get(remoteId);
+  if (t !== undefined) {
+    clearTimeout(t);
+    disconnectTimers.delete(remoteId);
+  }
+}
+
 function makePeerConnection(remoteId: string): RTCPeerConnection {
   // A new connection replaces any intentional-close tracking for this peer
   intentionallyClosed.delete(remoteId);
+  clearDisconnectTimer(remoteId);
 
-  const pc = new RTCPeerConnection({
-    iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-  });
+  const pc = new RTCPeerConnection({ iceServers: _iceServers });
 
   // Send ICE candidates as they are gathered
   pc.onicecandidate = ({ candidate }) => {
@@ -46,17 +59,36 @@ function makePeerConnection(remoteId: string): RTCPeerConnection {
     }
   };
 
-  // Detect genuine ICE failures and notify App so it can retry signaling.
-  // We skip this if the connection was intentionally closed by us (peer left, etc.)
+  // Detect genuine connection failures and notify App so it can retry signaling.
+  // "disconnected" is often transient (brief network hiccup); give it 5 s to
+  // self-heal before treating it as a hard failure.  "failed" is definitive.
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === "failed" && !intentionallyClosed.has(remoteId)) {
-      if (peers.get(remoteId) === pc) {
-        pc.close();
-        peers.delete(remoteId);
-        iceQueues.delete(remoteId);
-        _onStream(remoteId, null);
-        _onDisconnect(remoteId);
-      }
+    if (intentionallyClosed.has(remoteId)) return;
+    if (peers.get(remoteId) !== pc) return;
+
+    if (pc.connectionState === "disconnected") {
+      // Schedule a forced teardown in 5 s if the state doesn't recover
+      const t = setTimeout(() => {
+        disconnectTimers.delete(remoteId);
+        if (peers.get(remoteId) === pc && !intentionallyClosed.has(remoteId)) {
+          pc.close();
+          peers.delete(remoteId);
+          iceQueues.delete(remoteId);
+          _onStream(remoteId, null);
+          _onDisconnect(remoteId);
+        }
+      }, 5000);
+      disconnectTimers.set(remoteId, t);
+    } else if (pc.connectionState === "connected") {
+      // Recovered from disconnected — cancel the pending teardown
+      clearDisconnectTimer(remoteId);
+    } else if (pc.connectionState === "failed") {
+      clearDisconnectTimer(remoteId);
+      pc.close();
+      peers.delete(remoteId);
+      iceQueues.delete(remoteId);
+      _onStream(remoteId, null);
+      _onDisconnect(remoteId);
     }
   };
 
@@ -72,6 +104,11 @@ function makePeerConnection(remoteId: string): RTCPeerConnection {
 }
 
 export const webrtc = {
+  /** Replaces the ICE server list. Call before createOffer. */
+  setIceServers(servers: RTCIceServer[]): void {
+    _iceServers = servers;
+  },
+
   setLocalStream(stream: MediaStream): void {
     _localStream = stream;
   },
@@ -102,6 +139,7 @@ export const webrtc = {
   /** Called when we receive an offer from a peer. */
   async handleOffer(fromId: string, sdp: RTCSessionDescriptionInit): Promise<void> {
     peers.get(fromId)?.close();
+    clearDisconnectTimer(fromId);
     iceQueues.delete(fromId);
     const pc = makePeerConnection(fromId);
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
@@ -140,6 +178,7 @@ export const webrtc = {
 
   closeConnection(sessionId: string): void {
     intentionallyClosed.add(sessionId);
+    clearDisconnectTimer(sessionId);
     peers.get(sessionId)?.close();
     peers.delete(sessionId);
     iceQueues.delete(sessionId);
@@ -148,6 +187,7 @@ export const webrtc = {
 
   closeAll(): void {
     for (const id of peers.keys()) intentionallyClosed.add(id);
+    for (const id of disconnectTimers.keys()) clearDisconnectTimer(id);
     peers.forEach((pc) => pc.close());
     peers.clear();
     iceQueues.clear();
