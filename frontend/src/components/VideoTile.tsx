@@ -105,7 +105,9 @@ export default function VideoTile({
             position: "absolute",
             bottom: "8px",
             left: "8px",
-            backgroundColor: "rgba(8, 5, 3, 0.62)",
+            backgroundColor: isLocal && color
+              ? `color-mix(in srgb, ${color.hex} 18%, rgba(8,5,3,0.72))`
+              : "rgba(8, 5, 3, 0.62)",
             backdropFilter: "blur(6px)",
             // Intentionally uneven corners — hand-placed feel
             borderRadius: "5px 9px 9px 5px",
@@ -113,23 +115,40 @@ export default function VideoTile({
             fontSize: "11px",
             color: "rgba(230, 200, 162, 0.72)",
             letterSpacing: "0.025em",
-            maxWidth: "68%",
+            maxWidth: "80%",
             overflow: "hidden",
-            textOverflow: "ellipsis",
             whiteSpace: "nowrap",
+            border: isLocal && color ? `1px solid ${color.hex}30` : undefined,
           }}
         >
-          {name}
-          {isLocal && (
-            <span
-              style={{
-                color: color ? color.hex + "88" : "rgba(180,150,110,0.5)",
-                marginLeft: "5px",
-                fontSize: "10px",
-              }}
-            >
-              you
-            </span>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", display: "inline-block", maxWidth: "100%" }}>
+            {name}
+          </span>
+          {isLocal && color && (
+            <>
+              <span
+                style={{
+                  color: color.hex + "99",
+                  marginLeft: "5px",
+                  fontSize: "10px",
+                }}
+              >
+                you
+              </span>
+              <span
+                style={{
+                  marginLeft: "6px",
+                  fontSize: "9px",
+                  letterSpacing: "0.06em",
+                  textTransform: "uppercase",
+                  color: color.hex,
+                  textShadow: `0 0 6px ${color.hex}cc, 0 0 12px ${color.hex}66`,
+                  fontWeight: 600,
+                }}
+              >
+                {color.element}
+              </span>
+            </>
           )}
         </div>
       )}

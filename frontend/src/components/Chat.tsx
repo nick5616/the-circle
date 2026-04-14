@@ -132,7 +132,7 @@ export default function Chat({
         >
           <span
             style={{
-              color: nameColor ? nameColor.hex + "88" : "rgba(200,160,100,0.45)",
+              color: nameColor ? nameColor.hex + "bb" : "rgba(200,160,100,0.65)",
               fontSize: "11px",
               textShadow: transparent ? "0 1px 4px rgba(0,0,0,0.9)" : undefined,
             }}
@@ -141,7 +141,7 @@ export default function Chat({
           </span>
           <span
             style={{
-              color: "rgba(185, 148, 95, 0.3)",
+              color: "rgba(185, 148, 95, 0.6)",
               fontSize: "11px",
               textShadow: transparent ? "0 1px 4px rgba(0,0,0,0.9)" : undefined,
             }}
@@ -185,7 +185,7 @@ export default function Chat({
           <span
             className="group-hover:opacity-100"
             style={{
-              color: "rgba(180, 140, 85, 0.25)",
+              color: "rgba(180, 140, 85, 0.55)",
               fontSize: "10px",
               opacity: 0,
               transition: "opacity 0.2s ease",
@@ -325,58 +325,68 @@ export default function Chat({
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
-        {/* Glass panel — fades in on hover, invisible when not hovered */}
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: "rgba(10, 7, 4, 0.86)",
-            backdropFilter: "blur(24px)",
-            WebkitBackdropFilter: "blur(24px)",
-            borderLeft: "1px solid rgba(255,255,255,0.04)",
-            opacity: isHovered ? 1 : 0,
-            transition: "opacity 0.3s ease",
-            pointerEvents: "none",
-          }}
-        />
-
-        {/* Hovered: full scrollable feed — fills space above input tray */}
+        {/* Single wrapper: glass panel + feed share one opacity transition so they
+            appear together — no "empty dark rectangle before content" flash. */}
         <div
           style={{
             position: "absolute",
             top: 0,
             left: 0,
             right: 0,
-            bottom: `${INPUT_TRAY_H}px`,
-            overflowY: "auto",
-            padding: "52px 12px 8px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "8px",
-            scrollbarWidth: "thin",
-            scrollbarColor: "rgba(80,55,30,0.3) transparent",
+            bottom: 0,
             opacity: isHovered ? 1 : 0,
-            transition: "opacity 0.25s ease",
+            transition: "opacity 0.22s ease",
             pointerEvents: isHovered ? "auto" : "none",
           }}
         >
-          {items.length === 0 && (
-            <p
-              style={{
-                color: "rgba(190, 155, 100, 0.14)",
-                fontSize: "11px",
-                textAlign: "center",
-                letterSpacing: "0.04em",
-                marginTop: "auto",
-                paddingBottom: "24px",
-                textShadow: "0 1px 4px rgba(0,0,0,0.8)",
-              }}
-            >
-              the circle is quiet
-            </p>
-          )}
-          {isHovered && feedContent}
-          <div ref={bottomRef} />
+          {/* Glass background */}
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "rgba(10, 7, 4, 0.86)",
+              backdropFilter: "blur(24px)",
+              WebkitBackdropFilter: "blur(24px)",
+              borderLeft: "1px solid rgba(255,255,255,0.04)",
+            }}
+          />
+
+          {/* Scrollable feed — always rendered so items never re-animate on hover */}
+          <div
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: `${INPUT_TRAY_H}px`,
+              overflowY: "auto",
+              padding: "52px 12px 8px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
+              scrollbarWidth: "thin",
+              scrollbarColor: "rgba(80,55,30,0.3) transparent",
+              zIndex: 1,
+            }}
+          >
+            {items.length === 0 && (
+              <p
+                style={{
+                  color: "rgba(190, 155, 100, 0.14)",
+                  fontSize: "11px",
+                  textAlign: "center",
+                  letterSpacing: "0.04em",
+                  marginTop: "auto",
+                  paddingBottom: "24px",
+                  textShadow: "0 1px 4px rgba(0,0,0,0.8)",
+                }}
+              >
+                the circle is quiet
+              </p>
+            )}
+            {feedContent}
+            <div ref={bottomRef} />
+          </div>
         </div>
 
         {/* Not-hovered: timed expiring messages anchored just above input tray */}

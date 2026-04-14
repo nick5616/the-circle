@@ -642,7 +642,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* Mobile chat overlay — sheet (z-35) covers full footer when open */}
+        {/* Mobile chat overlay — sheet (z-35) covers full footer when open.
+            chatBarHeight = 1px border + 10px top pad + 48px buttons + 10px bot pad */}
         <MobileChatOverlay
           items={feedItems}
           myName={localName}
@@ -650,6 +651,7 @@ export default function App() {
           onExpand={() => setMobileChatExpanded(true)}
           onCollapse={() => setMobileChatExpanded(false)}
           onSend={handleSendChat}
+          chatBarHeight={69}
         />
       </div>
     );
@@ -673,43 +675,6 @@ export default function App() {
             "radial-gradient(ellipse 70% 60% at 50% 50%, rgba(190,80,10,0.07) 0%, transparent 70%)",
         }}
       />
-
-      {/* Top-right icon cluster — view toggle only; chat is always-on overlay */}
-      <div
-        className="absolute z-30 flex items-center gap-1"
-        style={{
-          top: "14px",
-          right: "14px",
-          background: "rgba(8, 5, 3, 0.78)",
-          backdropFilter: "blur(14px)",
-          borderRadius: "999px",
-          padding: "3px",
-          border: "1px solid rgba(255,255,255,0.07)",
-        }}
-      >
-        <button
-          onClick={() => setView((v) => (v === "grid" ? "circle" : "grid"))}
-          title={view === "grid" ? "Circle view" : "Grid view"}
-          style={iconBtn}
-        >
-          {view === "grid" ? (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <circle cx="12" cy="12" r="9" />
-              <circle cx="12" cy="3" r="1.5" fill="currentColor" stroke="none" />
-              <circle cx="12" cy="21" r="1.5" fill="currentColor" stroke="none" />
-              <circle cx="3" cy="12" r="1.5" fill="currentColor" stroke="none" />
-              <circle cx="21" cy="12" r="1.5" fill="currentColor" stroke="none" />
-            </svg>
-          ) : (
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <rect x="3" y="3" width="7" height="7" rx="1" />
-              <rect x="14" y="3" width="7" height="7" rx="1" />
-              <rect x="3" y="14" width="7" height="7" rx="1" />
-              <rect x="14" y="14" width="7" height="7" rx="1" />
-            </svg>
-          )}
-        </button>
-      </div>
 
       {/* Video — always full canvas; chat floats over as transparent overlay */}
       <div className="absolute inset-0">
@@ -785,6 +750,13 @@ export default function App() {
           >
             leave room
           </button>
+          <ControlBtn
+            onClick={() => setView((v) => (v === "grid" ? "circle" : "grid"))}
+            active={false}
+            title={view === "grid" ? "Circle view" : "Grid view"}
+          >
+            <ViewToggleIcon view={view} />
+          </ControlBtn>
         </div>
       )}
 
@@ -853,6 +825,14 @@ export default function App() {
                 d="M5.636 5.636a9 9 0 1012.728 12.728M12 3v9m0 0l3-3m-3 3L9 9" />
             </svg>
           </ControlBtn>
+
+          <ControlBtn
+            onClick={() => setView((v) => (v === "grid" ? "circle" : "grid"))}
+            active={false}
+            title={view === "grid" ? "Circle view" : "Grid view"}
+          >
+            <ViewToggleIcon view={view} />
+          </ControlBtn>
         </div>
       )}
 
@@ -876,21 +856,25 @@ export default function App() {
   );
 }
 
-// ─── Shared style objects ────────────────────────────────────────────────────
 
-const iconBtn: React.CSSProperties = {
-  width: "32px",
-  height: "32px",
-  borderRadius: "50%",
-  background: "transparent",
-  border: "none",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  color: "rgba(215, 180, 125, 0.82)",
-  cursor: "pointer",
-  transition: "color 0.25s ease",
-};
+function ViewToggleIcon({ view }: { view: "grid" | "circle" }) {
+  return view === "grid" ? (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="3" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="21" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="3" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="21" cy="12" r="1.5" fill="currentColor" stroke="none" />
+    </svg>
+  ) : (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" />
+    </svg>
+  );
+}
 
 function ControlBtn({
   children,

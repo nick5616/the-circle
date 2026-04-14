@@ -8,9 +8,15 @@ export default defineConfig({
   server: {
     host: true,
     proxy: {
+      // http-proxy requires an http:// target even for WebSocket proxying;
+      // ws:true tells it to upgrade the connection itself.
       "/ws": {
-        target: process.env.BACKEND_WS_URL ?? "ws://localhost:8000",
+        target: process.env.BACKEND_URL ?? "http://localhost:8000",
         ws: true,
+        changeOrigin: true,
+      },
+      "/api": {
+        target: process.env.BACKEND_URL ?? "http://localhost:8000",
         changeOrigin: true,
       },
     },

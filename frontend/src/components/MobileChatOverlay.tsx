@@ -40,10 +40,10 @@ function FeedEntry({ item }: { item: FeedItem }) {
           animation: "float-up 0.4s ease-out both",
         }}
       >
-        <span style={{ color: nameColor ? nameColor.hex + "88" : "rgba(200,160,100,0.45)", fontSize: "11px" }}>
+        <span style={{ color: nameColor ? nameColor.hex + "bb" : "rgba(200,160,100,0.65)", fontSize: "11px" }}>
           {item.name}
         </span>
-        <span style={{ color: "rgba(185,148,95,0.3)", fontSize: "11px" }}> {item.text}</span>
+        <span style={{ color: "rgba(185,148,95,0.6)", fontSize: "11px" }}> {item.text}</span>
       </div>
     );
   }
@@ -65,7 +65,7 @@ function FeedEntry({ item }: { item: FeedItem }) {
         <span style={{ color: senderColor.hex, fontSize: "11px", fontWeight: 600, letterSpacing: "0.02em" }}>
           {item.sender}
         </span>
-        <span style={{ color: "rgba(180,140,85,0.25)", fontSize: "10px" }}>
+        <span style={{ color: "rgba(180,140,85,0.5)", fontSize: "10px" }}>
           {formatTime(item.timestamp)}
         </span>
       </div>
