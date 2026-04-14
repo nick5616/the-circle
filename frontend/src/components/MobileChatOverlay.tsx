@@ -380,7 +380,7 @@ export default function MobileChatOverlay({
                     borderRadius: "20px",
                     padding: "9px 40px 9px 16px",
                     color: "rgba(232, 200, 160, 0.88)",
-                    fontSize: "14px",
+                    fontSize: "16px",
                     caretColor: "rgba(220,175,115,0.8)",
                     outline: "none",
                     boxSizing: "border-box",
