@@ -325,17 +325,20 @@ export default function Chat({
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
-        {/* Single wrapper: glass panel + feed share one opacity transition so they
-            appear together — no "empty dark rectangle before content" flash. */}
+        {/* Sliding panel: glass bg + feed.
+            Uses transform (not opacity) so it lives on its own GPU layer from
+            the start — no compositor promotion surprise that would visually
+            shift the video tiles behind it. Slides in from the right on hover. */}
         <div
           style={{
             position: "absolute",
             top: 0,
             left: 0,
             right: 0,
-            bottom: 0,
-            opacity: isHovered ? 1 : 0,
-            transition: "opacity 0.22s ease",
+            bottom: `${INPUT_TRAY_H}px`,
+            transform: isHovered ? "translateX(0)" : "translateX(100%)",
+            transition: "transform 0.24s cubic-bezier(0.4, 0, 0.2, 1)",
+            willChange: "transform",
             pointerEvents: isHovered ? "auto" : "none",
           }}
         >
@@ -355,10 +358,7 @@ export default function Chat({
           <div
             style={{
               position: "absolute",
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: `${INPUT_TRAY_H}px`,
+              inset: 0,
               overflowY: "auto",
               padding: "52px 12px 8px",
               display: "flex",
