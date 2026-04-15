@@ -15,12 +15,6 @@ interface Props {
   transparent?: boolean;
 }
 
-interface TimedMsg {
-  id: string;
-  item: FeedItem & { kind: "chat" };
-  removing: boolean;
-}
-
 function formatTime(iso: string): string {
   try {
     return new Date(iso).toLocaleTimeString([], {
@@ -49,16 +43,36 @@ export default function Chat({
 
   // Transparent-mode state
   const [isHovered, setIsHovered] = useState(false);
-  const [timedMsgs, setTimedMsgs] = useState<TimedMsg[]>([]);
-  const timedSeededRef = useRef(false);
-  const timedPrevLenRef = useRef(0);
-  const timerMapRef = useRef<Map<string, ReturnType<typeof setTimeout>[]>>(new Map());
+  const [highlighted, setHighlighted] = useState(false);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const prevItemsLenRef = useRef<number | null>(null);
 
   useEffect(() => {
-    // In transparent mode only scroll when the panel is actually visible
-    if (transparent && !isHovered) return;
+    // In transparent mode only scroll when messages are visible
+    if (transparent && !isHovered && !highlighted) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [items, transparent, isHovered]);
+  }, [items, transparent, isHovered, highlighted]);
+
+  // New-message highlight in transparent mode
+  useEffect(() => {
+    if (!transparent) return;
+    // Seed on first render — don't flash existing history
+    if (prevItemsLenRef.current === null) {
+      prevItemsLenRef.current = items.length;
+      return;
+    }
+    if (items.length > prevItemsLenRef.current) {
+      prevItemsLenRef.current = items.length;
+      setHighlighted(true);
+      clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = setTimeout(() => setHighlighted(false), 3000);
+    }
+  }, [items, transparent]);
+
+  // Clean up timer on unmount
+  useEffect(() => {
+    return () => clearTimeout(highlightTimerRef.current);
+  }, []);
 
   function submit() {
     const text = draft.trim();
@@ -66,56 +80,6 @@ export default function Chat({
     onSend(text);
     setDraft("");
   }
-
-  // Timed message system for transparent (desktop) mode
-  useEffect(() => {
-    if (!transparent) return;
-
-    if (!timedSeededRef.current) {
-      timedSeededRef.current = true;
-      timedPrevLenRef.current = items.length;
-      return;
-    }
-
-    if (items.length <= timedPrevLenRef.current) {
-      timedPrevLenRef.current = items.length;
-      return;
-    }
-
-    const newItems = items.slice(timedPrevLenRef.current);
-    timedPrevLenRef.current = items.length;
-
-    const chatItems = newItems.filter(
-      (i): i is FeedItem & { kind: "chat" } => i.kind === "chat"
-    );
-    if (!chatItems.length) return;
-
-    const now = Date.now();
-    const newMsgs: TimedMsg[] = chatItems.map((item, i) => ({
-      id: `${now}-${i}-${Math.random().toString(36).slice(2)}`,
-      item,
-      removing: false,
-    }));
-
-    setTimedMsgs((prev) => [...prev, ...newMsgs]);
-
-    newMsgs.forEach((msg) => {
-      // After 5s, mark as removing (triggers CSS fade via animation)
-      // The chat-expire animation runs for 5s; we add to DOM then remove at 5.3s
-      const removeTimer = setTimeout(() => {
-        setTimedMsgs((p) => p.filter((m) => m.id !== msg.id));
-        timerMapRef.current.delete(msg.id);
-      }, 5300);
-      timerMapRef.current.set(msg.id, [removeTimer]);
-    });
-  }, [items, transparent]);
-
-  // Clean up timers on unmount
-  useEffect(() => {
-    return () => {
-      timerMapRef.current.forEach((timers) => timers.forEach(clearTimeout));
-    };
-  }, []);
 
   // ── Shared feed items renderer ─────────────────────────────────────────────
   const feedContent = items.map((item, i) => {
@@ -314,152 +278,56 @@ export default function Chat({
     </div>
   );
 
-  // ── Transparent floating overlay (desktop) ──────────────────────────────────
-  // Input tray height in transparent mode: padding 10+16=26px + input ~36px + border = ~64px
-  const INPUT_TRAY_H = 64;
+  // ── Transparent always-on overlay (desktop) ────────────────────────────────
+  // Messages are always visible but dim at rest. Hovering or a new message
+  // boosts opacity to full. No layout shifts — everything is in-flow and
+  // opacity-only transitions never affect the compositor tree of siblings.
 
   if (transparent) {
+    const feedOpaque = isHovered || highlighted;
+
     return (
       <div
-        style={{ height: "100%", position: "relative" }}
+        style={{ height: "100%", position: "relative", display: "flex", flexDirection: "column" }}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
-        {/* Sliding panel: glass bg + feed.
-            Uses transform (not opacity) so it lives on its own GPU layer from
-            the start — no compositor promotion surprise that would visually
-            shift the video tiles behind it. Slides in from the right on hover. */}
+        {/* Scrollable feed — always on screen, opacity controlled by hover/highlight */}
         <div
           style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: `${INPUT_TRAY_H}px`,
-            transform: isHovered ? "translateX(0)" : "translateX(100%)",
-            transition: "transform 0.24s cubic-bezier(0.4, 0, 0.2, 1)",
-            willChange: "transform",
-            pointerEvents: isHovered ? "auto" : "none",
-          }}
-        >
-          {/* Glass background */}
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              background: "rgba(10, 7, 4, 0.86)",
-              backdropFilter: "blur(24px)",
-              WebkitBackdropFilter: "blur(24px)",
-              borderLeft: "1px solid rgba(255,255,255,0.04)",
-            }}
-          />
-
-          {/* Scrollable feed — always rendered so items never re-animate on hover */}
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              overflowY: "auto",
-              padding: "52px 12px 8px",
-              display: "flex",
-              flexDirection: "column",
-              gap: "8px",
-              scrollbarWidth: "thin",
-              scrollbarColor: "rgba(80,55,30,0.3) transparent",
-              zIndex: 1,
-            }}
-          >
-            {items.length === 0 && (
-              <p
-                style={{
-                  color: "rgba(190, 155, 100, 0.14)",
-                  fontSize: "11px",
-                  textAlign: "center",
-                  letterSpacing: "0.04em",
-                  marginTop: "auto",
-                  paddingBottom: "24px",
-                  textShadow: "0 1px 4px rgba(0,0,0,0.8)",
-                }}
-              >
-                the circle is quiet
-              </p>
-            )}
-            {feedContent}
-            <div ref={bottomRef} />
-          </div>
-        </div>
-
-        {/* Not-hovered: timed expiring messages anchored just above input tray */}
-        <div
-          style={{
-            position: "absolute",
-            left: 0,
-            right: 0,
-            bottom: `${INPUT_TRAY_H + 8}px`,
-            padding: "0 12px",
+            flex: 1,
+            overflowY: "auto",
+            padding: "52px 12px 8px",
             display: "flex",
             flexDirection: "column",
-            gap: "6px",
-            opacity: isHovered ? 0 : 1,
-            transition: "opacity 0.2s ease",
-            pointerEvents: "none",
+            gap: "8px",
+            scrollbarWidth: "thin",
+            scrollbarColor: "rgba(80,55,30,0.3) transparent",
+            opacity: feedOpaque ? 1 : 0.28,
+            transition: "opacity 0.5s ease",
           }}
         >
-          {timedMsgs.map((msg) => {
-            const senderColor = hashNameToColor(msg.item.sender);
-            return (
-              <div
-                key={msg.id}
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "3px",
-                  background: "rgba(8, 5, 3, 0.88)",
-                  borderRadius: "10px",
-                  padding: "8px 12px",
-                  borderLeft: `2px solid ${senderColor.hex}40`,
-                  animation: "chat-expire 5s linear forwards",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "baseline", gap: "7px" }}>
-                  <span
-                    style={{
-                      color: senderColor.hex,
-                      fontSize: "11px",
-                      fontWeight: 600,
-                      letterSpacing: "0.02em",
-                      textShadow: "0 1px 3px rgba(0,0,0,0.8)",
-                    }}
-                  >
-                    {msg.item.sender}
-                  </span>
-                </div>
-                <p
-                  style={{
-                    color: "rgba(232, 202, 165, 0.88)",
-                    fontSize: "13px",
-                    lineHeight: 1.45,
-                    margin: 0,
-                    wordBreak: "break-word",
-                    textShadow: "0 1px 3px rgba(0,0,0,0.7)",
-                  }}
-                >
-                  {msg.item.content}
-                </p>
-              </div>
-            );
-          })}
+          {items.length === 0 && (
+            <p
+              style={{
+                color: "rgba(190, 155, 100, 0.14)",
+                fontSize: "11px",
+                textAlign: "center",
+                letterSpacing: "0.04em",
+                marginTop: "auto",
+                paddingBottom: "24px",
+                textShadow: "0 1px 4px rgba(0,0,0,0.8)",
+              }}
+            >
+              the circle is quiet
+            </p>
+          )}
+          {feedContent}
+          <div ref={bottomRef} />
         </div>
 
-        {/* Input tray — always visible, anchored to bottom */}
-        <div
-          style={{
-            position: "absolute",
-            bottom: 0,
-            left: 0,
-            right: 0,
-          }}
-        >
+        {/* Input tray — always full opacity, never dimmed */}
+        <div style={{ flexShrink: 0 }}>
           {inputSection}
         </div>
       </div>

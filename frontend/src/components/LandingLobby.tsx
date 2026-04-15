@@ -226,6 +226,29 @@ export default function LandingLobby({ seats, audienceCount, onJoin }: Props) {
           )}
         </div>
 
+        {/* Flame fact — appears once the element is resolved */}
+        <p
+          style={{
+            fontSize: "11px",
+            letterSpacing: "0.06em",
+            textAlign: "center",
+            color: fireColor ? fireColor.hex : "transparent",
+            textShadow: fireColor
+              ? `0 0 8px ${fireColor.hex}aa, 0 0 20px ${fireColor.hex}44`
+              : "none",
+            opacity: fireColor ? 1 : 0,
+            transform: fireColor ? "translateY(0)" : "translateY(6px)",
+            transition: "opacity 0.6s ease, transform 0.6s ease, color 0.6s ease, text-shadow 0.6s ease",
+            marginTop: "-10px",
+            pointerEvents: "none",
+            userSelect: "none",
+          }}
+        >
+          {fireColor
+            ? `${fireColor.element} gives a ${fireColor.flameColor} flame`
+            : ""}
+        </p>
+
         {/* Action zone — fades up when name exists */}
         <div
           className="flex flex-col items-center"

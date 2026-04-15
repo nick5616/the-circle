@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { hashNameToColor } from "../fireColors";
 
 interface Props {
@@ -22,6 +22,7 @@ export default function VideoTile({
   audioLevel = 0,
 }: Props) {
   const color = name ? hashNameToColor(name) : null;
+  const [mirrored, setMirrored] = useState(true);
 
   const isSpeaking = audioLevel > 0.15;
 
@@ -63,14 +64,40 @@ export default function VideoTile({
       }}
     >
       {hasVideo && stream ? (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted={isLocal}
-          className="w-full h-full object-cover"
-          style={isLocal ? { transform: "scaleX(-1)" } : undefined}
-        />
+        <>
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted={isLocal}
+            className="w-full h-full object-cover"
+            style={isLocal && mirrored ? { transform: "scaleX(-1)" } : undefined}
+          />
+          {isLocal && (
+            <button
+              onClick={() => setMirrored((m) => !m)}
+              title="Flip camera"
+              style={{
+                position: "absolute",
+                top: "7px",
+                right: "7px",
+                background: "rgba(8, 5, 3, 0.55)",
+                backdropFilter: "blur(6px)",
+                WebkitBackdropFilter: "blur(6px)",
+                border: "none",
+                borderRadius: "6px",
+                padding: "4px 6px",
+                cursor: "pointer",
+                color: mirrored ? "rgba(230, 200, 162, 0.55)" : "rgba(230, 200, 162, 0.85)",
+                fontSize: "13px",
+                lineHeight: 1,
+                transition: "color 0.2s ease, background 0.2s ease",
+              }}
+            >
+              ⇄
+            </button>
+          )}
+        </>
       ) : (
         // Camera-off presence state — ambient fire-color pulse, not a gray box
         <div className="absolute inset-0 flex items-center justify-center">
@@ -109,47 +136,19 @@ export default function VideoTile({
               ? `color-mix(in srgb, ${color.hex} 18%, rgba(8,5,3,0.72))`
               : "rgba(8, 5, 3, 0.62)",
             backdropFilter: "blur(6px)",
-            // Intentionally uneven corners — hand-placed feel
             borderRadius: "5px 9px 9px 5px",
             padding: "3px 8px 3px 7px",
             fontSize: "11px",
             color: "rgba(230, 200, 162, 0.72)",
             letterSpacing: "0.025em",
-            maxWidth: "80%",
+            maxWidth: "68%",
             overflow: "hidden",
+            textOverflow: "ellipsis",
             whiteSpace: "nowrap",
             border: isLocal && color ? `1px solid ${color.hex}30` : undefined,
           }}
         >
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", display: "inline-block", maxWidth: "100%" }}>
-            {name}
-          </span>
-          {isLocal && color && (
-            <>
-              <span
-                style={{
-                  color: color.hex + "99",
-                  marginLeft: "5px",
-                  fontSize: "10px",
-                }}
-              >
-                you
-              </span>
-              <span
-                style={{
-                  marginLeft: "6px",
-                  fontSize: "9px",
-                  letterSpacing: "0.06em",
-                  textTransform: "uppercase",
-                  color: color.hex,
-                  textShadow: `0 0 6px ${color.hex}cc, 0 0 12px ${color.hex}66`,
-                  fontWeight: 600,
-                }}
-              >
-                {color.element}
-              </span>
-            </>
-          )}
+          {name}
         </div>
       )}
 
