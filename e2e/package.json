@@ -1,0 +1,12 @@
+{
+  "name": "the-circle-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "soak": "node soak.mjs",
+    "netem": "bash netem.sh"
+  },
+  "devDependencies": {
+    "playwright": "^1.55.0"
+  }
+}

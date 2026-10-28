@@ -2,120 +2,461 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ------------------------------------------------------------------ */
+/* Tokens                                                               */
+/* ------------------------------------------------------------------ */
+
+:root {
+  --bg: #0d0806;
+  --ink: #f7e6d3;
+  --ink-2: rgba(247, 230, 211, 0.68);
+  --ink-3: rgba(247, 230, 211, 0.4);
+  --ink-4: rgba(247, 230, 211, 0.18);
+  --ember: #ff7a3d;
+  --gold: #ffc46b;
+  --rose: #ff8fab;
+  --glass: rgba(22, 13, 10, 0.5);
+  --glass-strong: rgba(20, 12, 9, 0.8);
+  --line: rgba(255, 214, 170, 0.1);
+  --spring: cubic-bezier(0.22, 1.25, 0.36, 1);
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --font-display: "Fraunces", Georgia, serif;
+  --font-body: "Figtree", system-ui, sans-serif;
+  --font-hand: "Caveat", "Segoe Print", cursive;
+  color-scheme: dark;
+}
+
 html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
-  max-width: 100%;
-  overflow-x: hidden;
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: rgba(255, 143, 171, 0.35);
+}
+
+button {
+  font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+
+input::placeholder {
+  color: var(--ink-3);
+}
+
+input:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px dashed rgba(255, 196, 107, 0.7);
+  outline-offset: 3px;
+  border-radius: 12px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Fire canvas                                                          */
+/* ------------------------------------------------------------------ */
+
+.fire-canvas,
+.fire-fallback {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.fire-fallback {
+  background:
+    radial-gradient(ellipse 40% 34% at 50% 64%, rgba(255, 110, 40, 0.28), transparent 70%),
+    radial-gradient(ellipse 80% 70% at 50% 60%, rgba(150, 40, 20, 0.18), transparent 75%),
+    var(--bg);
+  animation: breathe 4s ease-in-out infinite;
+}
+
+/* ------------------------------------------------------------------ */
+/* Type                                                                 */
+/* ------------------------------------------------------------------ */
+
+.display {
+  font-family: var(--font-display);
+  font-variation-settings: "SOFT" 100, "WONK" 1;
+  font-optical-sizing: auto;
+}
+
+.hand {
+  font-family: var(--font-hand);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tiles                                                                */
+/* ------------------------------------------------------------------ */
+
+.tile {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transition:
+    transform 0.75s var(--spring),
+    width 0.75s var(--spring),
+    height 0.75s var(--spring);
+  will-change: transform;
+  --lvl: 0;
+}
+
+.tile-body {
+  position: absolute;
+  inset: 0;
+  border-radius: 22px;
+  overflow: hidden;
+  background: #140c09;
+  box-shadow:
+    0 0 0 1.5px color-mix(in srgb, var(--c) calc(28% + var(--lvl) * 60%), transparent),
+    0 22px 60px -26px rgba(0, 0, 0, 0.9);
+  transform: scale(calc(1 + var(--lvl) * 0.03));
+  transition: transform 0.22s var(--ease), box-shadow 0.22s var(--ease);
+  /* backwards, not both: a held final keyframe would pin transform and kill the speaking scale */
+  animation: tile-bloom 0.9s var(--spring) backwards;
+  isolation: isolate;
+}
+
+.tile[data-leaving="true"] .tile-body {
+  animation: tile-out 0.5s var(--ease) forwards;
+}
+
+.tile video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0;
+  transition: opacity 0.6s var(--ease);
+}
+
+.tile video[data-live="true"] {
+  opacity: 1;
+}
+
+.presence {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 50% 58%, color-mix(in srgb, var(--c) 30%, transparent) 0%, transparent 62%),
+    radial-gradient(circle at 50% 120%, rgba(255, 120, 50, 0.16), transparent 60%),
+    #150c09;
+  transition: opacity 0.6s var(--ease);
+}
+
+.presence::before {
+  content: "";
+  position: absolute;
+  width: 46%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--c) 45%, transparent), transparent 70%);
+  filter: blur(8px);
+  animation: breathe 3.6s ease-in-out infinite;
+  transform: scale(calc(1 + var(--lvl) * 0.5));
+}
+
+.presence-initial {
+  position: relative;
+  font-size: clamp(30px, 5vw, 64px);
+  font-style: italic;
+  font-weight: 400;
+  color: var(--ink);
+  text-shadow: 0 0 24px color-mix(in srgb, var(--c) 80%, transparent);
+}
+
+.nametag {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 20px);
+  padding: 2px 11px 3px 8px;
+  border-radius: 999px;
+  background: rgba(18, 10, 8, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--ink);
+  font-family: var(--font-hand);
+  font-size: 19px;
+  line-height: 1.15;
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.nametag span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flame-dot {
+  width: 9px;
+  height: 11px;
+  flex-shrink: 0;
+  background: var(--c);
+  border-radius: 50% 50% 50% 50% / 62% 62% 38% 38%;
+  transform: rotate(0deg) scale(calc(1 + var(--lvl) * 0.6));
+  box-shadow: 0 0 8px var(--c);
+  transition: transform 0.15s var(--ease);
+}
+
+.tile-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 3;
+  font-family: var(--font-hand);
+  font-size: 22px;
+  color: var(--ink);
+  background: rgba(13, 8, 6, 0.45);
+  backdrop-filter: blur(2px);
+  animation: fade-in 0.6s var(--ease) both;
+}
+
+.tile-status span {
+  animation: flicker 2.4s ease-in-out infinite;
+}
+
+.signal {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  display: flex;
+  gap: 3px;
+  z-index: 2;
+}
+
+.signal i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(255, 214, 170, 0.18);
+}
+
+/* ------------------------------------------------------------------ */
+/* Glass + controls                                                     */
+/* ------------------------------------------------------------------ */
+
+.glass {
+  background: var(--glass);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 220, 180, 0.07),
+    0 18px 50px -24px rgba(0, 0, 0, 0.85);
+}
+
+.dock-btn {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border: none;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+  background: rgba(255, 220, 180, 0.05);
+  cursor: pointer;
+  transition: background 0.25s var(--ease), color 0.25s var(--ease), transform 0.35s var(--spring);
+}
+
+.dock-btn:hover {
+  background: rgba(255, 220, 180, 0.1);
+  color: var(--ink);
+  transform: translateY(-2px) rotate(-2deg);
+}
+
+.dock-btn:active {
+  transform: scale(0.92);
+}
+
+.dock-btn[data-off="true"] {
+  color: #2a0f12;
+  background: var(--rose);
+  box-shadow: 0 0 22px -4px rgba(255, 143, 171, 0.7);
+}
+
+.dock-btn[data-on="true"] {
+  color: var(--ink);
+  background: rgba(255, 196, 107, 0.16);
+}
+
+.dock-btn .tip {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%) rotate(-3deg) translateY(4px);
+  padding: 1px 9px 2px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: #2a140c;
+  font-family: var(--font-hand);
+  font-size: 18px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s var(--ease), transform 0.3s var(--spring);
+}
+
+.dock-btn:hover .tip {
+  opacity: 1;
+  transform: translateX(-50%) rotate(-3deg) translateY(0);
+}
+
+@media (pointer: coarse) {
+  .dock-btn .tip {
+    display: none;
+  }
+}
+
+.pill-btn {
+  height: 48px;
+  padding: 0 22px;
+  border: none;
+  border-radius: 18px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: transform 0.35s var(--spring), box-shadow 0.3s var(--ease), background 0.3s var(--ease);
+}
+
+.pill-btn:hover {
+  transform: translateY(-2px) rotate(-1deg);
+}
+
+.pill-btn:active {
+  transform: scale(0.96);
+}
+
+.pill-btn:disabled {
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Chat                                                                 */
+/* ------------------------------------------------------------------ */
+
+.chat-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 196, 140, 0.18) transparent;
+}
+
+.msg {
+  animation: msg-in 0.5s var(--spring) both;
+}
+
+.msg-time {
+  opacity: 0;
+  transition: opacity 0.2s var(--ease);
+}
+
+.msg:hover .msg-time {
+  opacity: 1;
 }
 
 /* ------------------------------------------------------------------ */
 /* Keyframes                                                            */
 /* ------------------------------------------------------------------ */
 
-@keyframes fire-breathe {
-  0%, 100% { opacity: 0.35; transform: scale(1); }
-  50%       { opacity: 0.65; transform: scale(1.12); }
+@keyframes breathe {
+  0%, 100% { opacity: 0.7; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.08); }
 }
 
-@keyframes bloom-pulse {
-  0%   { opacity: 0.55; transform: scale(0.25); }
-  65%  { opacity: 0.22; transform: scale(1.05); }
-  100% { opacity: 0;    transform: scale(1.4);  }
-}
-
-@keyframes glow-pulse {
-  0%, 100% { opacity: 0.55; }
-  50%      { opacity: 1;    }
-}
-
-@keyframes float-up {
-  from { opacity: 0; transform: translateY(14px); }
-  to   { opacity: 1; transform: translateY(0);    }
-}
-
-@keyframes ember-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-@keyframes tile-in {
-  from { opacity: 0; transform: scale(0.82); }
-  to   { opacity: 1; transform: scale(1); }
+@keyframes tile-bloom {
+  0% { opacity: 0; transform: scale(0.55); filter: blur(14px) brightness(2); }
+  60% { opacity: 1; filter: blur(0) brightness(1.15); }
+  100% { opacity: 1; transform: scale(1); filter: none; }
 }
 
 @keyframes tile-out {
-  from { opacity: 1; transform: scale(1); }
-  to   { opacity: 0; transform: scale(0.82); }
+  to { opacity: 0; transform: scale(0.7) translateY(-14px); filter: blur(10px) brightness(1.6); }
 }
 
-@keyframes speaking-fire {
-  0%   { background-position: 50% 80%; }
-  25%  { background-position: 35% 60%; }
-  50%  { background-position: 65% 40%; }
-  75%  { background-position: 40% 65%; }
-  100% { background-position: 50% 80%; }
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
-@keyframes slide-up-overlay {
-  from { transform: translateY(32px); opacity: 0; }
-  to   { transform: translateY(0);    opacity: 1; }
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-/* Back-loaded 5-second chat message fade: stays opaque most of the time,
-   then accelerates toward invisible near the end.                          */
-@keyframes chat-expire {
-  0%,  55% { opacity: 1;   }
-  85%      { opacity: 0.25; }
-  100%     { opacity: 0;   }
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* ------------------------------------------------------------------ */
-/* Utility animation classes                                            */
-/* ------------------------------------------------------------------ */
-
-@layer utilities {
-  .animate-fire-breathe {
-    animation: fire-breathe 5s ease-in-out infinite;
-  }
-  .animate-bloom-pulse {
-    animation: bloom-pulse 0.85s ease-out forwards;
-  }
-  .animate-glow-pulse {
-    animation: glow-pulse 2.2s ease-in-out infinite;
-  }
-  .animate-float-up {
-    animation: float-up 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
-  }
-  .animate-ember-in {
-    animation: ember-in 0.9s ease-out forwards;
-  }
-  .animate-tile-in {
-    animation: tile-in 0.38s cubic-bezier(0.34, 1.56, 0.64, 1) both;
-  }
-  .animate-tile-out {
-    animation: tile-out 0.28s ease-in forwards;
-  }
-  .animate-speaking-fire {
-    animation: speaking-fire 2.2s ease-in-out infinite;
-  }
-  .animate-slide-up-overlay {
-    animation: slide-up-overlay 0.32s cubic-bezier(0.34, 1.2, 0.64, 1) both;
-  }
+@keyframes flicker {
+  0%, 100% { opacity: 0.85; }
+  40% { opacity: 0.55; }
+  55% { opacity: 1; }
+  70% { opacity: 0.7; }
 }
 
-/* Hide scrollbar for mobile video grid */
-.mobile-grid-scroll::-webkit-scrollbar {
-  display: none;
+@keyframes twinkle {
+  0%, 100% { opacity: 0.2; transform: scale(0.7) rotate(0deg); }
+  50% { opacity: 1; transform: scale(1) rotate(20deg); }
 }
 
-/* ------------------------------------------------------------------ */
-/* Input placeholder warmth                                             */
-/* ------------------------------------------------------------------ */
-
-.fire-input::placeholder {
-  color: rgba(220, 175, 120, 0.32);
+@keyframes float-emoji {
+  0% { opacity: 0; transform: translate(0, 0) scale(0.4); }
+  12% { opacity: 1; transform: translate(calc(var(--dx) * 0.15), -30px) scale(1.15); }
+  100% { opacity: 0; transform: translate(var(--dx), -280px) scale(0.9) rotate(var(--rot)); }
 }
 
-.fire-input:focus {
-  outline: none;
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+@keyframes wiggle {
+  0%, 100% { transform: rotate(-3deg); }
+  50% { transform: rotate(3deg); }
+}
+
+/* Opacity only: a filter/transform animation would make this wrapper the
+   containing block for its position:fixed children (dock, chat) */
+@keyframes curtain {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.12s !important;
+  }
 }

@@ -124,83 +124,37 @@ Two-panel layout:
 
 ## WebSocket Message Protocol
 
-All messages are JSON over a single WebSocket connection per client.
+All messages are JSON `{type, payload}` over one websocket per client
+(`/ws/room/?sid=<id>&token=<token>` when resuming). See `frontend/src/types.ts`.
 
-### Client → Server
+**Client → Server:** `join {name, role}`, `chat {content}`,
+`signal {target, pcid, description? | candidate? | kick?}`, `media {mic, cam}`,
+`react {emoji}`, `take_seat`, `leave_seat`, `ping {t}`, `bye`, `telemetry {...}`
 
-```typescript
-// Join the room
-{ type: "join", payload: { name: string, role: "participant" | "audience" } }
-
-// Send a chat message
-{ type: "chat", payload: { content: string } }
-
-// WebRTC signaling
-{ type: "offer",     payload: { target: string, sdp: RTCSessionDescriptionInit } }
-{ type: "answer",    payload: { target: string, sdp: RTCSessionDescriptionInit } }
-{ type: "ice",       payload: { target: string, candidate: RTCIceCandidateInit } }
-
-// Audience member requests to take an open seat
-{ type: "take_seat" }
-
-// Participant voluntarily leaves their seat (stays as audience)
-{ type: "leave_seat" }
-```
-
-### Server → Client
-
-```typescript
-// Full room state snapshot (sent on join and after any seat change)
-{
-  type: "room_state",
-  payload: {
-    seats: Array<{ session_id: string, name: string } | null>,  // length 8, null = empty
-    audience_count: number,
-    your_session_id: string,
-    your_role: "participant" | "audience"
-  }
-}
-
-// New chat message broadcast to all
-{ type: "chat", payload: { sender: string, content: string, timestamp: string } }
-
-// Chat history on join (last 100 messages)
-{ type: "chat_history", payload: { messages: ChatMessage[] } }
-
-// WebRTC signaling forwarded peer-to-peer via server
-{ type: "offer",  payload: { from: string, sdp: RTCSessionDescriptionInit } }
-{ type: "answer", payload: { from: string, sdp: RTCSessionDescriptionInit } }
-{ type: "ice",    payload: { from: string, candidate: RTCIceCandidateInit } }
-
-// A participant disconnected or left their seat
-{ type: "participant_left", payload: { session_id: string } }
-
-// Seat request denied (room full)
-{ type: "seat_denied", payload: { reason: string } }
-```
+**Server → Client:** `hello {session_id, token, resumed, role, name, ice_servers, grace_seconds}`,
+`joined {role, name}`, `room_state {seats[8], audience_count, ...}` (seats carry
+`mic`, `cam`, `away`), `chat`, `chat_history`, `signal {from, pcid, ...}`,
+`peer_gone {session_id}`, `reaction`, `seat_denied`, `pong`
 
 ---
 
 ## WebRTC Architecture
 
-This prototype uses a **peer-to-peer mesh**. Each participant opens a direct `RTCPeerConnection` to every other participant. The Django Channels server acts only as a signaling relay — it never touches media.
+A peer-to-peer mesh. The server only relays signaling. `frontend/src/rtc.ts` reconciles
+links declaratively from room state, and every pair has exactly one offerer:
 
-**Connection flow when a new participant joins:**
+- participant ↔ participant: the lower session id offers
+- audience → participant: the audience member offers, receive-only
 
-1. New participant sends `join` with `role: "participant"`
-2. Server broadcasts updated `room_state` to all clients
-3. Existing participants each send an `offer` to the new participant (they are the polite side)
-4. New participant responds with `answer` to each
-5. ICE candidates are exchanged via the server
-6. Direct peer connections established — media flows P2P
+Each `RTCPeerConnection` has a random `pcid`, and all signals carry it, so stale
+signals for a replaced connection are ignored. Recovery escalates: ICE restart on
+`disconnected`/`failed`, then a full rebuild if a link isn't connected after 15s.
+An answerer that is missing a link sends a `kick` asking the offerer to (re)offer.
 
-**Local media:**
-- Request `getUserMedia({ video: true, audio: true })` on join as participant
-- Audience members never request camera/mic access
-
-**Cleanup:**
-- On disconnect, server broadcasts `participant_left`
-- All other participants close and remove that peer connection
+Remote audio plays through dedicated hidden `<audio>` elements, and video
+elements are always muted. That way a camera turning off or a tile re-mounting
+never cuts anyone's voice. Turning the camera off releases the device; turning it
+back on swaps the new track in with `replaceTrack` (no renegotiation).
 
 ---
 
@@ -221,10 +175,11 @@ Key responsibilities:
 ## Redis Keys
 
 ```
-room:seats          Hash    { session_id → JSON(name, channel_name, joined_at) }
-room:audience_count String  integer
+room:seats          Hash    { session_id → JSON(name, idx, joined_at, mic, cam, away) }
+room:audience       Hash    { session_id → name }
 room:chat           List    JSON chat messages, LTRIM to 100
-session:<id>        String  channel name for direct messaging, TTL 24h
+sess:<id>           Hash    { token, name, role, channel, gen }, TTL 1h
+alive:<id>          String  heartbeat, TTL 45s (expired → session reaped)
 ```
 
 ---

@@ -1,121 +1,91 @@
-// Shared message types for WebSocket protocol
+// Shared message types for the websocket protocol
 
 export type Role = "participant" | "audience";
 
 export interface Seat {
   session_id: string;
   name: string;
+  mic: boolean;
+  cam: boolean;
+  away: boolean; // socket dropped; seat held during the grace period
 }
 
 export interface ChatMessage {
+  id: string;
+  sid?: string;
   sender: string;
   content: string;
   timestamp: string;
 }
 
+export interface SignalPayload {
+  pcid: string;
+  description?: RTCSessionDescriptionInit;
+  candidate?: RTCIceCandidateInit | null;
+  kick?: boolean; // "I have no connection with your pcid — please (re)offer"
+}
+
+export type Reaction = "🔥" | "🫶" | "✨" | "😂" | "🥹" | "🪵";
+export const REACTIONS: Reaction[] = ["🔥", "🫶", "✨", "😂", "🥹", "🪵"];
+
 // ---- Client → Server ----
 
-export interface JoinMessage {
-  type: "join";
-  payload: { name: string; role: Role };
-}
-
-export interface SendChatMessage {
-  type: "chat";
-  payload: { content: string };
-}
-
-export interface OfferMessage {
-  type: "offer";
-  payload: { target: string; sdp: RTCSessionDescriptionInit };
-}
-
-export interface AnswerMessage {
-  type: "answer";
-  payload: { target: string; sdp: RTCSessionDescriptionInit };
-}
-
-export interface IceMessage {
-  type: "ice";
-  payload: { target: string; candidate: RTCIceCandidateInit };
-}
-
-export interface TakeSeatMessage {
-  type: "take_seat";
-}
-
-export interface LeaveSeatMessage {
-  type: "leave_seat";
-}
-
 export type ClientMessage =
-  | JoinMessage
-  | SendChatMessage
-  | OfferMessage
-  | AnswerMessage
-  | IceMessage
-  | TakeSeatMessage
-  | LeaveSeatMessage;
+  | { type: "ping"; payload: { t: number } }
+  | { type: "join"; payload: { name: string; role: Role } }
+  | { type: "chat"; payload: { content: string } }
+  | { type: "signal"; payload: SignalPayload & { target: string } }
+  | { type: "media"; payload: { mic: boolean; cam: boolean } }
+  | { type: "react"; payload: { emoji: Reaction } }
+  | { type: "take_seat"; payload?: undefined }
+  | { type: "leave_seat"; payload?: undefined }
+  | { type: "bye"; payload?: undefined }
+  | { type: "telemetry"; payload: Record<string, unknown> };
 
 // ---- Server → Client ----
 
-export interface RoomStateMessage {
-  type: "room_state";
-  payload: {
-    seats: Array<Seat | null>; // length 8, null = empty
-    audience_count: number;
-    your_session_id: string;
-    your_role: Role;
-  };
-}
-
-export interface ReceivedChatMessage {
-  type: "chat";
-  payload: ChatMessage;
-}
-
-export interface ChatHistoryMessage {
-  type: "chat_history";
-  payload: { messages: ChatMessage[] };
-}
-
-export interface ReceivedOfferMessage {
-  type: "offer";
-  payload: { from: string; sdp: RTCSessionDescriptionInit };
-}
-
-export interface ReceivedAnswerMessage {
-  type: "answer";
-  payload: { from: string; sdp: RTCSessionDescriptionInit };
-}
-
-export interface ReceivedIceMessage {
-  type: "ice";
-  payload: { from: string; candidate: RTCIceCandidateInit };
-}
-
-export interface ParticipantLeftMessage {
-  type: "participant_left";
-  payload: { session_id: string };
-}
-
-export interface SeatDeniedMessage {
-  type: "seat_denied";
-  payload: { reason: string };
+export interface RoomSnapshot {
+  seats: Array<Seat | null>; // length 8, indexed by seat position, null = empty
+  audience_count: number;
+  your_session_id: string;
+  your_role: Role;
 }
 
 export type ServerMessage =
-  | RoomStateMessage
-  | ReceivedChatMessage
-  | ChatHistoryMessage
-  | ReceivedOfferMessage
-  | ReceivedAnswerMessage
-  | ReceivedIceMessage
-  | ParticipantLeftMessage
-  | SeatDeniedMessage;
+  | {
+      type: "hello";
+      payload: {
+        session_id: string;
+        token: string;
+        resumed: boolean;
+        role: Role | null;
+        name: string;
+        ice_servers: RTCIceServer[];
+        grace_seconds: number;
+      };
+    }
+  | { type: "joined"; payload: { role: Role; name: string; session_id: string } }
+  | { type: "room_state"; payload: RoomSnapshot }
+  | { type: "chat"; payload: ChatMessage }
+  | { type: "chat_history"; payload: { messages: ChatMessage[] } }
+  | { type: "signal"; payload: SignalPayload & { from: string } }
+  | { type: "peer_gone"; payload: { session_id: string } }
+  | { type: "reaction"; payload: { session_id: string; name: string; emoji: Reaction } }
+  | { type: "seat_denied"; payload: { reason: string } }
+  | { type: "pong"; payload: { t: number } };
 
 // ---- Client-side UI ----
 
 export type FeedItem =
-  | { kind: "chat"; sender: string; content: string; timestamp: string }
-  | { kind: "event"; name: string; text: string; timestamp: string };
+  | ({ kind: "chat" } & ChatMessage)
+  | { kind: "event"; id: string; name: string; text: string; timestamp: string };
+
+export type WsStatus = "connecting" | "open" | "reconnecting";
+
+export type PeerHealth = "connecting" | "connected" | "reconnecting" | "failed";
+export type PeerQuality = "good" | "fair" | "poor" | "unknown";
+
+export interface PeerInfo {
+  health: PeerHealth;
+  quality: PeerQuality;
+}

@@ -41,3 +41,13 @@ CHANNEL_LAYERS = {
 }
 
 STATIC_URL = "/static/"
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"plain": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"}},
+    "handlers": {"stdout": {"class": "logging.StreamHandler", "formatter": "plain"}},
+    "loggers": {
+        "circle": {"handlers": ["stdout"], "level": "INFO", "propagate": False},
+    },
+}

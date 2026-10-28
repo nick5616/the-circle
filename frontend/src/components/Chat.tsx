@@ -1,382 +1,245 @@
 import { useEffect, useRef, useState } from "react";
-import type { FeedItem, Role } from "../types";
+import type { FeedItem } from "../types";
 import { hashNameToColor } from "../fireColors";
 
 interface Props {
   items: FeedItem[];
+  myId: string;
   myName: string;
-  role: Role;
-  seatsAvailable: boolean;
+  open: boolean;
+  mobile: boolean;
+  onClose: () => void;
+  onOpen: () => void;
   onSend: (content: string) => void;
-  onTakeSeat: () => void;
-  onLeaveRoom: () => void;
-  // When true the panel has no background — messages float as glass bubbles
-  // over whatever is behind it (video tiles on desktop).
-  transparent?: boolean;
 }
+
+export const CHAT_WIDTH = 330;
 
 function formatTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+    return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   } catch {
     return "";
   }
 }
 
-export default function Chat({
-  items,
-  myName,
-  role,
-  seatsAvailable,
-  onSend,
-  onTakeSeat,
-  onLeaveRoom,
-  transparent = false,
-}: Props) {
+export default function Chat({ items, myId, myName, open, mobile, onClose, onOpen, onSend }: Props) {
   const [draft, setDraft] = useState("");
-  const [inputFocused, setInputFocused] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const myColor = myName ? hashNameToColor(myName) : null;
+  const [toasts, setToasts] = useState<FeedItem[]>([]);
+  const scroller = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
+  const seen = useRef<Set<string> | null>(null);
+  const toastTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const input = useRef<HTMLInputElement>(null);
+  const myColor = hashNameToColor(myName || "?").hex;
 
-  // Transparent-mode state
-  const [isHovered, setIsHovered] = useState(false);
-  const [highlighted, setHighlighted] = useState(false);
-  const highlightTimerRef = useRef<ReturnType<typeof setTimeout>>();
-  const prevItemsLenRef = useRef<number | null>(null);
+  // Follow new messages unless the reader has scrolled up
+  useEffect(() => {
+    const el = scroller.current;
+    if (el && stickToBottom.current) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, [items, open]);
 
   useEffect(() => {
-    // In transparent mode only scroll when messages are visible
-    if (transparent && !isHovered && !highlighted) return;
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [items, transparent, isHovered, highlighted]);
+    if (open && !mobile) input.current?.focus({ preventScroll: true });
+  }, [open, mobile]);
 
-  // New-message highlight in transparent mode
+  // Floating toasts for messages that arrive while the chat is closed
   useEffect(() => {
-    if (!transparent) return;
-    // Seed on first render — don't flash existing history
-    if (prevItemsLenRef.current === null) {
-      prevItemsLenRef.current = items.length;
+    if (seen.current === null) {
+      seen.current = new Set(items.map((i) => i.id));
       return;
     }
-    if (items.length > prevItemsLenRef.current) {
-      prevItemsLenRef.current = items.length;
-      setHighlighted(true);
-      clearTimeout(highlightTimerRef.current);
-      highlightTimerRef.current = setTimeout(() => setHighlighted(false), 3000);
-    }
-  }, [items, transparent]);
+    const fresh = items.filter((i) => !seen.current!.has(i.id));
+    fresh.forEach((i) => seen.current!.add(i.id));
+    if (open || !fresh.length) return;
+    const chats = fresh.filter((i) => i.kind === "chat" && i.sid !== myId);
+    if (!chats.length) return;
+    setToasts((t) => [...t, ...chats].slice(-3));
+    const ids = chats.map((c) => c.id);
+    toastTimers.current.push(setTimeout(() => setToasts((t) => t.filter((x) => !ids.includes(x.id))), 6000));
+  }, [items, open, myId]);
 
-  // Clean up timer on unmount
+  useEffect(() => () => toastTimers.current.forEach(clearTimeout), []);
+
   useEffect(() => {
-    return () => clearTimeout(highlightTimerRef.current);
-  }, []);
+    if (open) setToasts([]);
+  }, [open]);
 
   function submit() {
     const text = draft.trim();
     if (!text) return;
     onSend(text);
     setDraft("");
+    stickToBottom.current = true;
   }
 
-  // ── Shared feed items renderer ─────────────────────────────────────────────
-  const feedContent = items.map((item, i) => {
-    if (item.kind === "event") {
-      const nameColor = item.name ? hashNameToColor(item.name) : null;
-      return (
-        <div
-          key={i}
-          style={{
-            textAlign: "center",
-            padding: "2px 0",
-            animation: "float-up 0.4s ease-out both",
-          }}
-        >
-          <span
-            style={{
-              color: nameColor ? nameColor.hex + "bb" : "rgba(200,160,100,0.65)",
-              fontSize: "11px",
-              textShadow: transparent ? "0 1px 4px rgba(0,0,0,0.9)" : undefined,
-            }}
-          >
-            {item.name}
-          </span>
-          <span
-            style={{
-              color: "rgba(185, 148, 95, 0.6)",
-              fontSize: "11px",
-              textShadow: transparent ? "0 1px 4px rgba(0,0,0,0.9)" : undefined,
-            }}
-          >
-            {" "}{item.text}
-          </span>
-        </div>
-      );
-    }
-
-    const senderColor = hashNameToColor(item.sender);
-    return (
-      <div
-        key={i}
-        className="group"
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: "3px",
-          background: "rgba(8, 5, 3, 0.58)",
-          backdropFilter: "blur(12px)",
-          WebkitBackdropFilter: "blur(12px)",
-          borderRadius: "10px",
-          padding: "8px 12px",
-          borderLeft: `2px solid ${senderColor.hex}40`,
-          animation: "float-up 0.35s cubic-bezier(0.34,1.56,0.64,1) both",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "baseline", gap: "7px" }}>
-          <span
-            style={{
-              color: senderColor.hex,
-              fontSize: "11px",
-              fontWeight: 600,
-              letterSpacing: "0.02em",
-              textShadow: "0 1px 3px rgba(0,0,0,0.8)",
-            }}
-          >
-            {item.sender}
-          </span>
-          <span
-            className="group-hover:opacity-100"
-            style={{
-              color: "rgba(180, 140, 85, 0.55)",
-              fontSize: "10px",
-              opacity: 0,
-              transition: "opacity 0.2s ease",
-            }}
-          >
-            {formatTime(item.timestamp)}
-          </span>
-        </div>
-        <p
-          style={{
-            color: "rgba(232, 202, 165, 0.88)",
-            fontSize: "13px",
-            lineHeight: 1.45,
-            margin: 0,
-            wordBreak: "break-word",
-            textShadow: "0 1px 3px rgba(0,0,0,0.7)",
-          }}
-        >
-          {item.content}
-        </p>
-      </div>
-    );
-  });
-
-  // ── Input section (shared) ──────────────────────────────────────────────────
-  const inputSection = (
+  const feed = (
     <div
-      style={{
-        flexShrink: 0,
-        padding: transparent ? "10px 14px 16px" : "12px 16px 20px",
-        display: "flex",
-        flexDirection: "column",
-        gap: "10px",
-        ...(transparent
-          ? {
-              background: "rgba(8, 5, 3, 0.72)",
-              backdropFilter: "blur(20px)",
-              WebkitBackdropFilter: "blur(20px)",
-              borderTop: "1px solid rgba(255,255,255,0.06)",
-            }
-          : {}),
+      ref={scroller}
+      className="chat-scroll"
+      onScroll={(e) => {
+        const el = e.currentTarget;
+        stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
       }}
+      style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "6px 16px 10px", display: "flex", flexDirection: "column", gap: 10 }}
     >
-      {role === "audience" && (
-        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-          {seatsAvailable && (
-            <button
-              onClick={onTakeSeat}
-              style={{
-                background: "none",
-                border: "none",
-                color: "rgba(210, 175, 120, 0.5)",
-                fontSize: "11px",
-                letterSpacing: "0.04em",
-                cursor: "pointer",
-                padding: "0",
-              }}
-            >
-              take a seat
-            </button>
-          )}
-          <button
-            onClick={onLeaveRoom}
-            style={{
-              background: "none",
-              border: "none",
-              color: "rgba(180, 130, 85, 0.35)",
-              fontSize: "11px",
-              letterSpacing: "0.04em",
-              cursor: "pointer",
-              padding: "0",
-              marginLeft: "auto",
-            }}
-          >
-            leave room
-          </button>
-        </div>
+      {items.length === 0 && (
+        <p className="hand" style={{ margin: "auto 0 10px", textAlign: "center", fontSize: 22, color: "var(--ink-3)" }}>
+          no messages yet
+        </p>
       )}
-      <div style={{ position: "relative" }}>
-        <input
-          type="text"
-          placeholder="say something…"
-          maxLength={1000}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          onFocus={() => setInputFocused(true)}
-          onBlur={() => setInputFocused(false)}
-          className="fire-input w-full"
-          style={{
-            background: "transparent",
-            border: "none",
-            borderBottom: `1px solid ${
-              inputFocused && myColor
-                ? myColor.hex + "55"
-                : transparent
-                ? "rgba(255,255,255,0.1)"
-                : "rgba(255,255,255,0.07)"
-            }`,
-            padding: "7px 0 8px",
-            color: "rgba(232, 200, 160, 0.88)",
-            fontSize: "13px",
-            caretColor: myColor ? myColor.hex : "rgba(220,175,115,0.7)",
-            transition: "border-color 0.4s ease",
-          }}
-        />
-        {inputFocused && myColor && (
-          <div
-            style={{
-              position: "absolute",
-              bottom: 0,
-              left: 0,
-              right: 0,
-              height: "1px",
-              background: `linear-gradient(90deg, transparent, ${myColor.hex}55, transparent)`,
-              pointerEvents: "none",
-            }}
-          />
-        )}
-      </div>
+      {items.map((item) => <Entry key={item.id} item={item} mine={item.kind === "chat" && item.sid === myId} />)}
     </div>
   );
 
-  // ── Transparent always-on overlay (desktop) ────────────────────────────────
-  // Messages are always visible but dim at rest. Hovering or a new message
-  // boosts opacity to full. No layout shifts — everything is in-flow and
-  // opacity-only transitions never affect the compositor tree of siblings.
-
-  if (transparent) {
-    const feedOpaque = isHovered || highlighted;
-
-    return (
-      <div
-        style={{ height: "100%", position: "relative", display: "flex", flexDirection: "column" }}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
-      >
-        {/* Scrollable feed — always on screen, opacity controlled by hover/highlight */}
-        <div
-          style={{
-            flex: 1,
-            overflowY: "auto",
-            padding: "52px 12px 8px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "8px",
-            scrollbarWidth: "thin",
-            scrollbarColor: "rgba(80,55,30,0.3) transparent",
-            opacity: feedOpaque ? 1 : 0.28,
-            transition: "opacity 0.5s ease",
-          }}
-        >
-          {items.length === 0 && (
-            <p
-              style={{
-                color: "rgba(190, 155, 100, 0.14)",
-                fontSize: "11px",
-                textAlign: "center",
-                letterSpacing: "0.04em",
-                marginTop: "auto",
-                paddingBottom: "24px",
-                textShadow: "0 1px 4px rgba(0,0,0,0.8)",
-              }}
-            >
-              the circle is quiet
-            </p>
-          )}
-          {feedContent}
-          <div ref={bottomRef} />
-        </div>
-
-        {/* Input tray — always full opacity, never dimmed */}
-        <div style={{ flexShrink: 0 }}>
-          {inputSection}
-        </div>
-      </div>
-    );
-  }
-
-  // ── Opaque sidebar (legacy / keep for fallback) ─────────────────────────────
-  return (
-    <div
-      style={{
-        height: "100%",
-        display: "flex",
-        flexDirection: "column",
-        background: "rgba(14, 10, 6, 0.88)",
-        backdropFilter: "blur(20px)",
-        boxShadow: "-14px 0 48px 0 rgba(6, 4, 2, 0.65)",
+  const composer = (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit();
       }}
+      style={{ display: "flex", gap: 8, padding: "10px 12px 12px", alignItems: "center" }}
     >
-      <div
+      <input
+        ref={input}
+        data-testid="chat-input"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onClose();
+        }}
+        maxLength={500}
+        placeholder="say something"
+        autoComplete="off"
+        enterKeyHint="send"
         style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: "48px 16px 12px",
-          display: "flex",
-          flexDirection: "column",
-          gap: "14px",
-          minHeight: 0,
-          scrollbarWidth: "thin",
-          scrollbarColor: "rgba(80,55,30,0.3) transparent",
+          flex: 1, minWidth: 0, height: 44, padding: "0 16px", borderRadius: 16, border: "1.5px solid transparent",
+          background: "rgba(255,220,180,0.07)", color: "var(--ink)", fontSize: 16, fontFamily: "var(--font-body)",
+          transition: "border-color 0.3s var(--ease), background 0.3s var(--ease)",
+        }}
+        onFocus={(e) => (e.currentTarget.style.borderColor = myColor + "88")}
+        onBlur={(e) => (e.currentTarget.style.borderColor = "transparent")}
+      />
+      <button
+        type="submit"
+        aria-label="send"
+        disabled={!draft.trim()}
+        style={{
+          width: 44, height: 44, flexShrink: 0, borderRadius: 16, border: "none", cursor: draft.trim() ? "pointer" : "default",
+          display: "grid", placeItems: "center", color: "#2a120a",
+          background: draft.trim() ? `linear-gradient(135deg, var(--gold), ${myColor})` : "rgba(255,220,180,0.07)",
+          transition: "background 0.3s var(--ease), transform 0.3s var(--spring)",
+          transform: draft.trim() ? "rotate(-8deg)" : "none",
         }}
       >
-        {items.length === 0 && (
-          <p
-            style={{
-              color: "rgba(190, 155, 100, 0.2)",
-              fontSize: "12px",
-              textAlign: "center",
-              letterSpacing: "0.04em",
-              marginTop: "auto",
-              paddingBottom: "24px",
-            }}
-          >
-            the circle is quiet
-          </p>
-        )}
-        {feedContent}
-        <div ref={bottomRef} />
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={draft.trim() ? "#2a120a" : "rgba(247,230,211,0.4)"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4.5 12.2L19.6 4.8l-5 15.4-3.2-6.6-6.9-1.4z" />
+        </svg>
+      </button>
+    </form>
+  );
+
+  const header = (
+    <div style={{ display: "flex", alignItems: "center", padding: "14px 12px 6px 18px" }}>
+      <span className="hand" style={{ fontSize: 24, color: "var(--ink)" }}>chat</span>
+      <button
+        onClick={onClose}
+        aria-label="close chat"
+        style={{ marginLeft: "auto", width: 34, height: 34, borderRadius: 12, border: "none", background: "transparent", color: "var(--ink-3)", cursor: "pointer", fontSize: 18 }}
+      >
+        ✕
+      </button>
+    </div>
+  );
+
+  return (
+    <>
+      {!open && toasts.length > 0 && (
+        <div
+          onClick={onOpen}
+          style={{
+            position: "fixed", zIndex: 25, bottom: `calc(${mobile ? 86 : 92}px + env(safe-area-inset-bottom))`,
+            right: mobile ? 12 : 20, left: mobile ? 12 : "auto", width: mobile ? "auto" : 300,
+            display: "flex", flexDirection: "column", gap: 6, cursor: "pointer",
+          }}
+        >
+          {toasts.map((t) => t.kind === "chat" && (
+            <div key={t.id} className="glass msg" style={{ padding: "8px 14px 9px", borderRadius: 16 }}>
+              <span className="hand" style={{ fontSize: 19, color: hashNameToColor(t.sender).hex, marginRight: 8 }}>{t.sender}</span>
+              <span style={{ fontSize: 14, color: "var(--ink)" }}>{t.content}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {mobile ? (
+        open && (
+          <>
+            <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 39, background: "rgba(8,4,3,0.35)", animation: "fade-in .3s both" }} />
+            <div
+              className="glass"
+              data-testid="chat-panel"
+              style={{
+                position: "fixed", left: 0, right: 0, bottom: 0, height: "64dvh", zIndex: 40, borderRadius: "26px 26px 0 0",
+                display: "flex", flexDirection: "column", paddingBottom: "env(safe-area-inset-bottom)",
+                background: "rgba(22,13,10,0.97)", animation: "sheet-up 0.45s var(--spring) both",
+              }}
+            >
+              <div style={{ width: 44, height: 5, borderRadius: 3, background: "var(--ink-4)", margin: "10px auto 0" }} />
+              {header}
+              {feed}
+              {composer}
+            </div>
+          </>
+        )
+      ) : (
+        <div
+          className="glass"
+          data-testid="chat-panel"
+          style={{
+            position: "fixed", top: 12, right: 12, bottom: 12, width: CHAT_WIDTH, zIndex: 20, borderRadius: 26,
+            display: "flex", flexDirection: "column",
+            transform: open ? "translateX(0)" : `translateX(${CHAT_WIDTH + 30}px)`,
+            opacity: open ? 1 : 0,
+            transition: "transform 0.6s var(--spring), opacity 0.4s var(--ease)",
+            pointerEvents: open ? "auto" : "none",
+          }}
+        >
+          {header}
+          {feed}
+          {composer}
+        </div>
+      )}
+    </>
+  );
+}
+
+function Entry({ item, mine }: { item: FeedItem; mine: boolean }) {
+  if (item.kind === "event") {
+    return (
+      <p className="msg display" style={{ margin: "2px 0", textAlign: "center", fontSize: 13, fontStyle: "italic", color: "var(--ink-3)" }}>
+        <span style={{ color: hashNameToColor(item.name).hex }}>{item.name}</span> {item.text}
+      </p>
+    );
+  }
+  const c = hashNameToColor(item.sender).hex;
+  return (
+    <div className="msg" style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 4px" }}>
+        <span className="hand" style={{ fontSize: 19, color: c, lineHeight: 1 }}>{mine ? "you" : item.sender}</span>
+        <span className="msg-time" style={{ fontSize: 11, color: "var(--ink-3)" }}>{formatTime(item.timestamp)}</span>
       </div>
-      {inputSection}
+      <p
+        style={{
+          margin: "3px 0 0", padding: "8px 13px 9px", maxWidth: "88%", fontSize: 14.5, lineHeight: 1.45, color: "var(--ink)",
+          wordBreak: "break-word",
+          borderRadius: mine ? "18px 6px 18px 18px" : "6px 18px 18px 18px",
+          background: mine ? `linear-gradient(135deg, ${c}38, rgba(255,143,171,0.16))` : "rgba(255,220,180,0.06)",
+          boxShadow: `inset 2px 0 0 ${c}66`,
+        }}
+      >
+        {item.content}
+      </p>
     </div>
   );
 }

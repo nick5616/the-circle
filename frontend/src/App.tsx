@@ -1,929 +1,504 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { socket } from "./socket";
-import { webrtc } from "./webrtc";
-import type { FeedItem, Role, Seat, ServerMessage } from "./types";
-import LandingLobby from "./components/LandingLobby";
-import VideoGrid from "./components/VideoGrid";
-import MobileVideoGrid from "./components/MobileVideoGrid";
-import Chat from "./components/Chat";
-import MobileChatOverlay from "./components/MobileChatOverlay";
+import { rtc } from "./rtc";
+import { audioLevels } from "./audio";
+import { telemetry } from "./telemetry";
+import { flare, scene } from "./scene";
+import type { FeedItem, PeerInfo, Reaction, Role, RoomSnapshot, Seat, ServerMessage, WsStatus } from "./types";
+import FireCanvas from "./components/FireCanvas";
+import Landing from "./components/Landing";
+import Stage from "./components/Stage";
+import Dock from "./components/Dock";
+import Chat, { CHAT_WIDTH } from "./components/Chat";
 import SeatBar from "./components/SeatBar";
+import AudioSink from "./components/AudioSink";
+import Reactions, { type FloatingReaction } from "./components/Reactions";
+import Notice from "./components/Notice";
+import DebugHud from "./components/DebugHud";
 
-// ─── Mobile detection hook ───────────────────────────────────────────────────
+const EMPTY_SEATS: Array<Seat | null> = Array(8).fill(null);
 
-function useIsMobile(): boolean {
-  const [isMobile, setIsMobile] = useState(
-    () => typeof window !== "undefined" && window.innerWidth < 768
-  );
+function useViewport() {
+  const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight });
   useEffect(() => {
-    const update = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
+    const on = () => setVp({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
   }, []);
-  return isMobile;
+  return vp;
 }
 
-interface RoomState {
-  seats: Array<Seat | null>;
-  audience_count: number;
-  your_session_id: string;
-  your_role: Role;
-}
+const VIDEO: MediaTrackConstraints = {
+  facingMode: "user",
+  width: { ideal: 640 },
+  height: { ideal: 360 },
+  frameRate: { ideal: 24, max: 30 },
+};
+const AUDIO: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
 
-// ─── Speaking detection hook ────────────────────────────────────────────────
-
-// dBFS silence floor — below this is treated as silence
-const SILENCE_FLOOR_DB = -48;
-
-function useSpeaking(
-  streams: Map<string, MediaStream>,
-  localSessionId: string
-): Map<string, number> {
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const analysersRef = useRef(
-    new Map<string, { analyser: AnalyserNode; data: Uint8Array<ArrayBuffer>; smoothed: number }>()
-  );
-  const [audioLevels, setAudioLevels] = useState<Map<string, number>>(new Map());
-
-  // Add / remove analysers as streams change
-  useEffect(() => {
-    if (streams.size === 0) return;
+// Camera + mic, degrading gracefully: both → voice only → camera only → none
+async function acquireMedia(): Promise<{ stream: MediaStream | null; error?: string }> {
+  const md = navigator.mediaDevices;
+  if (!md?.getUserMedia) return { stream: null, error: "this browser can't share a camera here (try https or a newer browser)" };
+  try {
+    return { stream: await md.getUserMedia({ video: VIDEO, audio: AUDIO }) };
+  } catch (err) {
+    const name = (err as DOMException)?.name;
+    telemetry.event("media_error", { name, kind: "av" });
+    if (name === "NotAllowedError" || name === "SecurityError") {
+      return { stream: null, error: "your camera and mic are blocked. allow them from the icon in your address bar." };
+    }
+  }
+  for (const c of [{ audio: AUDIO }, { video: VIDEO }]) {
     try {
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new AudioContext();
-      }
-      const ctx = audioCtxRef.current;
-
-      // Normalize __local__ → actual session id
-      const norm = new Map<string, MediaStream>();
-      for (const [id, s] of streams) {
-        norm.set(id === "__local__" ? localSessionId : id, s);
-      }
-
-      for (const [id, stream] of norm) {
-        if (analysersRef.current.has(id)) continue;
-        if (!stream.getAudioTracks().length) continue;
-        const source = ctx.createMediaStreamSource(stream);
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.6; // lighter — we do our own EMA
-        source.connect(analyser);
-        const buf = new ArrayBuffer(analyser.frequencyBinCount);
-        analysersRef.current.set(id, { analyser, data: new Uint8Array(buf), smoothed: 0 });
-      }
-      for (const id of analysersRef.current.keys()) {
-        if (!norm.has(id)) analysersRef.current.delete(id);
-      }
-    } catch {
-      // AudioContext unavailable — degrade silently
-    }
-  }, [streams, localSessionId]);
-
-  // RAF polling loop — runs once, reads from ref
-  useEffect(() => {
-    let raf: number;
-    function poll() {
-      const levels = new Map<string, number>();
-
-      for (const [id, entry] of analysersRef.current) {
-        entry.analyser.getByteFrequencyData(entry.data);
-        const rms = Math.sqrt(
-          entry.data.reduce((s, v) => s + v * v, 0) / entry.data.length
-        );
-
-        // Convert RMS (0-255 scale) → dBFS → perceptual 0-1 level.
-        // Perceived loudness is roughly linear in dB, so a dBFS → 0-1 mapping
-        // gives us a scale that matches how humans hear volume differences.
-        let rawLevel = 0;
-        if (rms > 0) {
-          const dBFS = 20 * Math.log10(rms / 255);
-          rawLevel = Math.max(0, Math.min(1, (dBFS - SILENCE_FLOOR_DB) / -SILENCE_FLOOR_DB));
-        }
-
-        // EMA: rises fast (0.35 weight on new), decays moderately (0.65 carry)
-        // so the glow tracks speech onset quickly but doesn't strobe
-        entry.smoothed = entry.smoothed * 0.65 + rawLevel * 0.35;
-
-        if (entry.smoothed > 0.01) levels.set(id, entry.smoothed);
-      }
-
-      setAudioLevels((prev) => {
-        // Avoid re-render if nothing changed by more than the visual deadband (2.5%)
-        if (prev.size !== levels.size) return new Map(levels);
-        for (const [k, v] of levels) {
-          if (Math.abs((prev.get(k) ?? 0) - v) > 0.025) return new Map(levels);
-        }
-        for (const k of prev.keys()) {
-          if (!levels.has(k)) return new Map(levels);
-        }
-        return prev;
-      });
-
-      raf = requestAnimationFrame(poll);
-    }
-    raf = requestAnimationFrame(poll);
-    return () => cancelAnimationFrame(raf);
-  }, []);
-
-  return audioLevels;
+      return { stream: await md.getUserMedia(c) };
+    } catch {}
+  }
+  return { stream: null, error: "no camera or mic found, so you're watching for now" };
 }
-
-// ─── App ────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const isMobile = useIsMobile();
-  const [joined, setJoined] = useState(false);
-  const [roomState, setRoomState] = useState<RoomState | null>(null);
-  const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
-  const [muted, setMuted] = useState(false);
-  const [cameraOff, setCameraOff] = useState(false);
-  const [streams, setStreams] = useState<Map<string, MediaStream>>(
-    () => new Map()
-  );
-  const [view, setView] = useState<"grid" | "circle">("grid");
-  const [localName, setLocalName] = useState("");
-  const [mobileChatExpanded, setMobileChatExpanded] = useState(false);
+  const vp = useViewport();
+  const mobile = vp.w < 760;
+  const debug = useMemo(() => new URLSearchParams(location.search).has("debug"), []);
 
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const offeredTo = useRef<Set<string>>(new Set());
-  const roomStateRef = useRef<RoomState | null>(null);
-  const iceServersLoadedRef = useRef(false);
-  const prevSeatsRef = useRef<Array<Seat | null> | null>(null);
-  const joinedRef = useRef(false);
+  const [phase, setPhase] = useState<"landing" | "room">("landing");
+  const [room, setRoom] = useState<RoomSnapshot | null>(null);
+  const [me, setMe] = useState<{ sid: string; role: Role | null; name: string }>({ sid: "", role: null, name: "" });
+  const [ws, setWs] = useState<WsStatus>(socket.status);
+  const [feed, setFeed] = useState<FeedItem[]>([]);
+  const [streams, setStreams] = useState<Map<string, MediaStream>>(() => new Map());
+  const [peers, setPeers] = useState<Map<string, PeerInfo>>(() => new Map());
+  const [local, setLocal] = useState<MediaStream | null>(null);
+  const [mic, setMic] = useState(true);
+  const [cam, setCam] = useState(true);
+  const [view, setView] = useState<"grid" | "circle">(() => (window.innerWidth < 760 ? "grid" : "circle"));
+  const [chatOpen, setChatOpen] = useState(() => window.innerWidth >= 1180);
+  const [unread, setUnread] = useState(0);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [reactions, setReactions] = useState<FloatingReaction[]>([]);
+  const [joining, setJoining] = useState(false);
+  const [audioBlocked, setAudioBlocked] = useState(false);
+  const [hud, setHud] = useState(debug);
 
-  // Computed streams map with __local__ replaced by real session id
-  const gridStreams = useMemo(() => {
-    const m = new Map(streams);
-    if (localStreamRef.current && roomState?.your_session_id) {
-      m.set(roomState.your_session_id, localStreamRef.current);
-      m.delete("__local__");
+  const meRef = useRef(me);
+  meRef.current = me;
+  const roomRef = useRef<RoomSnapshot | null>(null);
+  const localRef = useRef<MediaStream | null>(null);
+  const mediaRef = useRef({ mic: true, cam: true });
+  // What we want to be, so a lost session can be silently re-joined
+  const intentRef = useRef<{ name: string; role: Role } | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout>>();
+  const reactionId = useRef(0);
+  const chatOpenRef = useRef(chatOpen);
+  chatOpenRef.current = chatOpen;
+
+  const say = useCallback((text: string, ms = 5500) => {
+    setNotice(text);
+    clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(null), ms);
+  }, []);
+
+  const seatedIds = (snap: RoomSnapshot | null) =>
+    (snap?.seats ?? []).filter((s): s is Seat => !!s).map((s) => s.session_id);
+
+  // ── Local media ─────────────────────────────────────────────────────────
+  const applyLocal = useCallback((stream: MediaStream | null) => {
+    if (localRef.current && localRef.current !== stream) {
+      const keep = new Set(stream?.getTracks() ?? []);
+      localRef.current.getTracks().forEach((t) => !keep.has(t) && t.stop());
     }
-    return m;
+    localRef.current = stream;
+    rtc.setLocalStream(stream);
+    setLocal(stream);
+    const m = { mic: !!stream?.getAudioTracks().length, cam: !!stream?.getVideoTracks().length };
+    mediaRef.current = m;
+    setMic(m.mic);
+    setCam(m.cam);
+  }, []);
+
+  const sendMedia = useCallback(() => {
+    if (meRef.current.role === "participant") socket.send({ type: "media", payload: mediaRef.current });
+  }, []);
+
+  // ── Wiring ──────────────────────────────────────────────────────────────
+  useEffect(() => {
+    rtc.setCallbacks(
+      (sid, stream) =>
+        setStreams((prev) => {
+          if (stream ? prev.get(sid) === stream : !prev.has(sid)) return prev;
+          const next = new Map(prev);
+          if (stream) next.set(sid, stream);
+          else next.delete(sid);
+          return next;
+        }),
+      setPeers
+    );
+    telemetry.setSender((payload) => socket.send({ type: "telemetry", payload }));
+    telemetry.setSummary(() => rtc.summary());
+    const offStatus = socket.onStatus(setWs);
+    const offMsg = socket.onMessage(handle);
+    socket.connect();
+
+    const bye = (e: PageTransitionEvent) => {
+      if (!e.persisted) socket.sayBye();
+    };
+    window.addEventListener("pagehide", bye);
+    (window as unknown as Record<string, unknown>).__circle = {
+      events: telemetry.events,
+      peers: () => rtc.summary(),
+      socket: () => ({ status: socket.status, rtt: socket.rtt, sid: socket.sessionId }),
+      me: () => meRef.current,
+      dropSocket: () => socket.simulateDrop(),
+    };
+    return () => {
+      offStatus();
+      offMsg();
+      window.removeEventListener("pagehide", bye);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streams, roomState?.your_session_id]);
-
-  const audioLevels = useSpeaking(
-    streams,
-    roomState?.your_session_id ?? ""
-  );
-
-  // ── Join / leave event detection ──────────────────────────────────────────
-  useEffect(() => {
-    if (!roomState || !joined) return;
-    const curr = roomState.seats;
-    const prev = prevSeatsRef.current;
-
-    if (prev !== null) {
-      const ts = new Date().toISOString();
-      const events: FeedItem[] = [];
-      for (let i = 0; i < 8; i++) {
-        const wasOccupied = prev[i];
-        const isOccupied = curr[i];
-        if (!wasOccupied && isOccupied) {
-          // Don't announce the local user joining to themselves
-          if (isOccupied.session_id !== roomState.your_session_id) {
-            events.push({
-              kind: "event",
-              name: isOccupied.name,
-              text: "joined the circle",
-              timestamp: ts,
-            });
-          }
-        } else if (wasOccupied && !isOccupied) {
-          events.push({
-            kind: "event",
-            name: wasOccupied.name,
-            text: "left",
-            timestamp: ts,
-          });
-        }
-      }
-      if (events.length) setFeedItems((prev) => [...prev, ...events]);
-    }
-    prevSeatsRef.current = curr;
-  }, [roomState, joined]);
-
-  // ── Fetch ICE server config from backend (keeps TURN creds out of the bundle)
-  useEffect(() => {
-    if (iceServersLoadedRef.current) return;
-    iceServersLoadedRef.current = true;
-    const apiBase = import.meta.env.VITE_API_URL ?? "";
-    fetch(`${apiBase}/api/ice-servers/`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (Array.isArray(data.iceServers) && data.iceServers.length > 0) {
-          webrtc.setIceServers(data.iceServers);
-        }
-      })
-      .catch(() => {
-        // Non-fatal: fall back to the default STUN-only config
-      });
   }, []);
 
-  // ── WebRTC stream callback ─────────────────────────────────────────────────
-  useEffect(() => {
-    webrtc.setStreamCallback((sessionId, stream) => {
-      setStreams((prev) => {
-        const next = new Map(prev);
-        if (stream) next.set(sessionId, stream);
-        else next.delete(sessionId);
-        return next;
-      });
-    });
-  }, []);
-
-  // ── WebRTC reconnect on ICE failure ───────────────────────────────────────
-  useEffect(() => {
-    webrtc.setDisconnectCallback((sessionId) => {
-      const state = roomStateRef.current;
-      if (!state) return;
-      const stillInRoom = state.seats.some((s) => s?.session_id === sessionId);
-      if (!stillInRoom) return;
-      // Clear tracking so room_state handler can re-run the offer logic if needed.
-      // Do NOT re-add here — the offer below (or the remote peer's offer) covers it.
-      offeredTo.current.delete(sessionId);
-      // Only the lower session_id re-initiates to avoid both sides offering.
-      // The higher-id peer leaves offeredTo clear so if a room_state arrives before
-      // the lower-id peer's re-offer does, it won't try to offer (avoiding a race).
-      if (state.your_session_id < sessionId) {
-        offeredTo.current.add(sessionId); // mark so room_state doesn't double-offer
-        webrtc.createOffer(sessionId);
-      }
-      // If we're the higher-id peer: offeredTo stays clear. When the lower-id peer
-      // re-offers, handleOffer tears down the dead connection and rebuilds it.
-    });
-  }, []);
-
-  // ── Server message handler ────────────────────────────────────────────────
-  const handleMessage = useCallback(async (msg: ServerMessage) => {
+  function handle(msg: ServerMessage) {
     switch (msg.type) {
-      case "room_state": {
-        const prev = roomStateRef.current;
-        roomStateRef.current = msg.payload;
-        setRoomState(msg.payload);
-
-        if (joinedRef.current) {
-          if (msg.payload.your_role === "participant") {
-            for (const seat of msg.payload.seats) {
-              if (!seat) continue;
-              if (seat.session_id === msg.payload.your_session_id) continue;
-              if (offeredTo.current.has(seat.session_id)) continue;
-              offeredTo.current.add(seat.session_id);
-              if (msg.payload.your_session_id < seat.session_id) {
-                await webrtc.createOffer(seat.session_id);
-              }
-            }
-          } else if (msg.payload.your_role === "audience") {
-            for (const seat of msg.payload.seats) {
-              if (!seat) continue;
-              if (offeredTo.current.has(seat.session_id)) continue;
-              offeredTo.current.add(seat.session_id);
-              await webrtc.createOffer(seat.session_id);
-            }
-          }
-        }
-
-        if (prev) {
-          const currentIds = new Set(
-            msg.payload.seats.filter(Boolean).map((s) => s!.session_id)
-          );
-          for (const seat of prev.seats) {
-            if (seat && !currentIds.has(seat.session_id)) {
-              webrtc.closeConnection(seat.session_id);
-              offeredTo.current.delete(seat.session_id);
-            }
-          }
+      case "hello": {
+        const p = msg.payload;
+        rtc.setIceServers(p.ice_servers);
+        setMe((m) => ({ ...m, sid: p.session_id }));
+        meRef.current = { ...meRef.current, sid: p.session_id };
+        if (p.resumed) {
+          rtc.signalingRestored();
+        } else if (intentRef.current) {
+          // The server forgot us (grace period ran out, or Redis was wiped). Quietly sit back down.
+          telemetry.event("rejoin", { role: intentRef.current.role });
+          rtc.reset();
+          const role = intentRef.current.role === "participant" && localRef.current ? "participant" : "audience";
+          meRef.current = { ...meRef.current, role: null };
+          socket.send({ type: "join", payload: { name: intentRef.current.name, role } });
         }
         break;
       }
+      case "joined": {
+        const { role, name } = msg.payload;
+        const wasRole = meRef.current.role;
+        meRef.current = { ...meRef.current, role, name };
+        setMe((m) => ({ ...m, role, name }));
+        intentRef.current = { name, role };
+        if (role === "audience" && localRef.current) applyLocal(null);
+        rtc.configure(meRef.current.sid, role, seatedIds(roomRef.current));
+        if (role === "participant") {
+          socket.send({ type: "media", payload: mediaRef.current });
+          if (wasRole !== "participant") flare(0.8);
+        }
+        setJoining(false);
+        setPhase("room");
+        break;
+      }
+      case "room_state": {
+        const prev = roomRef.current;
+        roomRef.current = msg.payload;
+        setRoom(msg.payload);
+        const { sid, role } = meRef.current;
+        if (role) rtc.configure(sid, role, seatedIds(msg.payload));
+        if (prev && role) announce(prev, msg.payload, sid);
+        break;
+      }
+      case "signal":
+        rtc.handleSignal(msg.payload.from, msg.payload);
+        break;
+      case "peer_gone":
+        rtc.drop(msg.payload.session_id);
+        break;
       case "chat":
-        setFeedItems((prev) => [
-          ...prev,
-          { kind: "chat", ...msg.payload },
-        ]);
+        mergeFeed([{ kind: "chat", ...msg.payload }]);
+        if (!chatOpenRef.current && msg.payload.sid !== meRef.current.sid) setUnread((u) => u + 1);
         break;
       case "chat_history":
-        setFeedItems(
-          msg.payload.messages.map((m) => ({ kind: "chat", ...m }))
-        );
+        mergeFeed(msg.payload.messages.map((m) => ({ kind: "chat" as const, ...m })));
         break;
-      case "offer":
-        await webrtc.handleOffer(msg.payload.from, msg.payload.sdp);
-        break;
-      case "answer":
-        await webrtc.handleAnswer(msg.payload.from, msg.payload.sdp);
-        break;
-      case "ice":
-        await webrtc.handleIce(msg.payload.from, msg.payload.candidate);
-        break;
-      case "participant_left":
-        webrtc.closeConnection(msg.payload.session_id);
-        offeredTo.current.delete(msg.payload.session_id);
+      case "reaction":
+        spawnReaction(msg.payload.session_id, msg.payload.emoji);
         break;
       case "seat_denied":
-        // Could be surfaced more gracefully — ambient inline message — but
-        // keeping alert for now since it's rare
-        alert(`Could not take seat: ${msg.payload.reason}`);
+        say("all 8 seats are taken, so you're watching for now");
+        if (localRef.current) applyLocal(null);
+        setJoining(false);
         break;
     }
-  }, []);
+  }
 
-  useEffect(() => {
-    socket.connect();
-    return socket.onMessage(handleMessage);
-  }, [handleMessage]);
+  function mergeFeed(items: FeedItem[]) {
+    setFeed((prev) => {
+      const ids = new Set(prev.map((i) => i.id));
+      const fresh = items.filter((i) => !ids.has(i.id));
+      if (!fresh.length) return prev;
+      return [...prev, ...fresh].slice(-300);
+    });
+  }
 
-  // ── Join ──────────────────────────────────────────────────────────────────
-  const handleJoin = useCallback(async (name: string, role: Role) => {
-    setLocalName(name);
-    socket.connect();
-
-    if (role === "participant") {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: "user",
-            width: { ideal: 640, max: 854 },
-            height: { ideal: 360, max: 480 },
-            frameRate: { ideal: 24, max: 30 },
-          },
-          audio: true,
-        });
-        localStreamRef.current = stream;
-        webrtc.setLocalStream(stream);
-        setStreams((prev) => new Map(prev).set("__local__", stream));
-      } catch (err) {
-        const isSecurityError =
-          err instanceof DOMException &&
-          (err.name === "NotAllowedError" || err.name === "SecurityError");
-        alert(
-          isSecurityError
-            ? "Camera access requires HTTPS on mobile. Joining as audience instead."
-            : "Could not access camera/mic. Joining as audience instead."
-        );
-        role = "audience";
+  function announce(prev: RoomSnapshot, next: RoomSnapshot, mySid: string) {
+    const before = new Map(prev.seats.filter((s): s is Seat => !!s).map((s) => [s.session_id, s]));
+    const after = new Map(next.seats.filter((s): s is Seat => !!s).map((s) => [s.session_id, s]));
+    const ts = new Date().toISOString();
+    const events: FeedItem[] = [];
+    for (const [sid, s] of after) {
+      if (!before.has(sid) && sid !== mySid) {
+        events.push({ kind: "event", id: `e-${sid}-in-${ts}`, name: s.name, text: "joined", timestamp: ts });
+        flare(0.5);
       }
     }
-
-    const unsub = socket.onMessage(async (msg: ServerMessage) => {
-      if (msg.type !== "room_state") return;
-      unsub();
-      joinedRef.current = true;
-      roomStateRef.current = msg.payload;
-      prevSeatsRef.current = msg.payload.seats; // seed — no events for initial state
-      setRoomState(msg.payload);
-      setJoined(true);
-
-      if (msg.payload.your_role === "participant") {
-        for (const seat of msg.payload.seats) {
-          if (!seat || seat.session_id === msg.payload.your_session_id)
-            continue;
-          if (offeredTo.current.has(seat.session_id)) continue;
-          offeredTo.current.add(seat.session_id);
-          if (msg.payload.your_session_id < seat.session_id) {
-            await webrtc.createOffer(seat.session_id);
-          }
-        }
-      } else if (msg.payload.your_role === "audience") {
-        for (const seat of msg.payload.seats) {
-          if (!seat) continue;
-          if (offeredTo.current.has(seat.session_id)) continue;
-          offeredTo.current.add(seat.session_id);
-          await webrtc.createOffer(seat.session_id);
-        }
+    for (const [sid, s] of before) {
+      if (!after.has(sid) && sid !== mySid) {
+        events.push({ kind: "event", id: `e-${sid}-out-${ts}`, name: s.name, text: "left", timestamp: ts });
       }
-    });
+    }
+    if (events.length) mergeFeed(events);
+  }
 
-    socket.send({ type: "join", payload: { name, role } });
-  }, []);
+  function spawnReaction(sid: string, emoji: Reaction) {
+    if (emoji === "🪵") flare(1.1);
+    else if (emoji === "🔥") flare(0.4);
+    const el = scene.people.find((p) => p.sid === sid)?.el;
+    const b = el?.getBoundingClientRect();
+    const x = b ? b.left + b.width * (0.3 + Math.random() * 0.4) : scene.fire.x + (Math.random() - 0.5) * 120;
+    const y = b ? b.top + b.height * 0.35 : scene.fire.y - scene.fire.size * 0.4;
+    const r: FloatingReaction = {
+      id: ++reactionId.current, emoji, x, y, dx: (Math.random() - 0.5) * 140, rot: (Math.random() - 0.5) * 50,
+    };
+    setReactions((rs) => [...rs.slice(-30), r]);
+    setTimeout(() => setReactions((rs) => rs.filter((x) => x.id !== r.id)), 2700);
+  }
 
-  // ── Participant actions ───────────────────────────────────────────────────
-  const handleSendChat = useCallback((content: string) => {
-    socket.send({ type: "chat", payload: { content } });
-  }, []);
+  // ── Actions ─────────────────────────────────────────────────────────────
+  const handleJoin = useCallback(async (name: string, role: Role) => {
+    setJoining(true);
+    audioLevels.resume();
+    let finalRole = role;
+    if (role === "participant") {
+      const { stream, error } = await acquireMedia();
+      if (stream) applyLocal(stream);
+      else {
+        finalRole = "audience";
+        if (error) say(error, 7000);
+      }
+    }
+    intentRef.current = { name, role: finalRole };
+    socket.send({ type: "join", payload: { name, role: finalRole } });
+  }, [say, applyLocal]);
 
-  const handleToggleMute = useCallback(() => {
-    const stream = localStreamRef.current;
+  const toggleMic = useCallback(() => {
+    const track = localRef.current?.getAudioTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    mediaRef.current = { ...mediaRef.current, mic: track.enabled };
+    setMic(track.enabled);
+    sendMedia();
+  }, [sendMedia]);
+
+  // Camera off really releases the camera (light goes out); on re-acquires it.
+  const toggleCam = useCallback(async () => {
+    const stream = localRef.current;
     if (!stream) return;
-    const next = !muted;
-    stream.getAudioTracks().forEach((t) => {
-      t.enabled = !next;
-    });
-    setMuted(next);
-  }, [muted]);
+    const current = stream.getVideoTracks()[0];
+    if (current) {
+      current.stop();
+      const next = new MediaStream(stream.getAudioTracks());
+      localRef.current = next;
+      rtc.setLocalStream(next);
+      setLocal(next);
+      await rtc.setLocalTrack("video", null);
+      mediaRef.current = { ...mediaRef.current, cam: false };
+      setCam(false);
+    } else {
+      try {
+        const v = await navigator.mediaDevices.getUserMedia({ video: VIDEO });
+        const track = v.getVideoTracks()[0];
+        const next = new MediaStream([...stream.getAudioTracks(), track]);
+        localRef.current = next;
+        rtc.setLocalStream(next);
+        setLocal(next);
+        await rtc.setLocalTrack("video", track);
+        mediaRef.current = { ...mediaRef.current, cam: true };
+        setCam(true);
+      } catch {
+        say("couldn't turn on your camera. another app might be using it.");
+        return;
+      }
+    }
+    sendMedia();
+  }, [say, sendMedia]);
 
-  const handleToggleCamera = useCallback(() => {
-    const stream = localStreamRef.current;
-    if (!stream) return;
-    const next = !cameraOff;
-    stream.getVideoTracks().forEach((t) => {
-      t.enabled = !next;
-    });
-    setCameraOff(next);
-  }, [cameraOff]);
-
-  const handleLeaveSeat = useCallback(() => {
-    localStreamRef.current?.getTracks().forEach((t) => t.stop());
-    localStreamRef.current = null;
-    webrtc.closeAll();
-    offeredTo.current.clear();
-    setStreams(new Map());
-    setMuted(false);
-    setCameraOff(false);
-    socket.send({ type: "leave_seat" });
-  }, []);
-
-  const handleLeaveRoom = useCallback(() => {
-    localStreamRef.current?.getTracks().forEach((t) => t.stop());
-    localStreamRef.current = null;
-    webrtc.closeAll();
-    offeredTo.current.clear();
-    socket.disconnect();
-    prevSeatsRef.current = null;
-    setJoined(false);
-    setRoomState(null);
-    setFeedItems([]);
-    setStreams(new Map());
-    setMuted(false);
-    setCameraOff(false);
-    setLocalName("");
-  }, []);
-
-  const handleTakeSeat = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: "user",
-          width: { ideal: 640, max: 854 },
-          height: { ideal: 360, max: 480 },
-          frameRate: { ideal: 24, max: 30 },
-        },
-        audio: true,
-      });
-      localStreamRef.current = stream;
-      webrtc.setLocalStream(stream);
-      setStreams((prev) => new Map(prev).set("__local__", stream));
-    } catch {
-      alert("Could not access camera/mic.");
+  const takeSeat = useCallback(async () => {
+    audioLevels.resume();
+    const { stream, error } = await acquireMedia();
+    if (!stream) {
+      if (error) say(error, 7000);
       return;
     }
+    applyLocal(stream);
     socket.send({ type: "take_seat" });
+  }, [say, applyLocal]);
+
+  const leaveSeat = useCallback(() => {
+    applyLocal(null);
+    socket.send({ type: "leave_seat" });
+  }, [applyLocal]);
+
+  const leaveRoom = useCallback(() => {
+    intentRef.current = null;
+    socket.leave();
+    rtc.reset();
+    applyLocal(null);
+    meRef.current = { sid: "", role: null, name: "" };
+    roomRef.current = null;
+    setMe(meRef.current);
+    setRoom(null);
+    setFeed([]);
+    setStreams(new Map());
+    setPeers(new Map());
+    setUnread(0);
+    setPhase("landing");
+  }, [applyLocal]);
+
+  const react = useCallback((emoji: Reaction) => socket.send({ type: "react", payload: { emoji } }), []);
+  const sendChat = useCallback((content: string) => socket.send({ type: "chat", payload: { content } }), []);
+
+  const onAudioBlocked = useCallback(() => {
+    setAudioBlocked((was) => {
+      if (!was) telemetry.event("audio_blocked");
+      return true;
+    });
   }, []);
 
-  // ── Landing ───────────────────────────────────────────────────────────────
-  const seatsOccupied = roomState ? roomState.seats.filter(Boolean).length : 0;
-  const seats = roomState?.seats ?? (Array(8).fill(null) as Array<Seat | null>);
+  // Unblock autoplay + wake the AudioContext on the first tap
+  useEffect(() => {
+    const wake = () => {
+      audioLevels.resume();
+      if (!audioBlocked) return;
+      document.querySelectorAll("audio").forEach((a) => a.play().catch(() => {}));
+      setAudioBlocked(false);
+    };
+    window.addEventListener("pointerdown", wake);
+    window.addEventListener("keydown", wake);
+    return () => {
+      window.removeEventListener("pointerdown", wake);
+      window.removeEventListener("keydown", wake);
+    };
+  }, [audioBlocked]);
 
-  if (!joined || !roomState) {
-    return (
-      <LandingLobby
-        seats={seats}
-        audienceCount={roomState?.audience_count ?? 0}
-        onJoin={handleJoin}
-      />
-    );
-  }
+  // Keyboard: m mute, v camera, c chat, ` debug
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const typing = (e.target as HTMLElement)?.tagName === "INPUT";
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "`") setHud((h) => !h);
+      if (phase !== "room") return;
+      if (e.key === "m") toggleMic();
+      else if (e.key === "v") toggleCam();
+      else if (e.key === "c") setChatOpen((o) => !o);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [phase, toggleMic, toggleCam]);
 
-  // ── Room ──────────────────────────────────────────────────────────────────
-  const role = roomState.your_role;
-  const seatsAvailable = seatsOccupied < 8;
+  useEffect(() => {
+    if (chatOpen) setUnread(0);
+  }, [chatOpen]);
 
-  // ── Mobile layout ─────────────────────────────────────────────────────────
-  if (isMobile) {
-    return (
-      <div
-        className="relative overflow-hidden"
-        style={{ width: "100%", height: "100dvh", backgroundColor: "#1a1510" }}
-      >
-        {/* Ambient fire glow */}
-        <div
-          className="pointer-events-none absolute inset-0 animate-fire-breathe"
-          style={{
-            background:
-              "radial-gradient(ellipse 70% 60% at 50% 50%, rgba(190,80,10,0.07) 0%, transparent 70%)",
-          }}
-        />
+  // Keep the screen awake while you're sitting by the fire
+  useEffect(() => {
+    if (phase !== "room" || me.role !== "participant" || !("wakeLock" in navigator)) return;
+    let lock: WakeLockSentinel | null = null;
+    const get = () => navigator.wakeLock.request("screen").then((l) => (lock = l)).catch(() => {});
+    get();
+    const onVis = () => document.visibilityState === "visible" && get();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      lock?.release().catch(() => {});
+    };
+  }, [phase, me.role]);
 
-        {/* Video fills the whole screen */}
-        <div className="absolute inset-0">
-          <MobileVideoGrid
-            seats={roomState.seats}
-            streams={gridStreams}
-            localSessionId={roomState.your_session_id}
-            audioLevels={audioLevels}
-            localCameraOff={cameraOff}
-          />
-        </div>
+  // ── Derived ─────────────────────────────────────────────────────────────
+  const seats = room?.seats ?? EMPTY_SEATS;
+  const occupied = useMemo(() => seats.filter((s): s is Seat => !!s), [seats]);
+  const allStreams = useMemo(() => {
+    const m = new Map(streams);
+    if (local && me.sid) m.set(me.sid, local);
+    return m;
+  }, [streams, local, me.sid]);
 
-        {/* Seat indicator — floats above tiles */}
-        <div
-          className="absolute z-10 pointer-events-none"
-          style={{
-            top: "14px",
-            left: "50%",
-            transform: "translateX(-50%)",
-          }}
-        >
-          <SeatBar
-            seats={roomState.seats}
-            audienceCount={roomState.audience_count}
-          />
-        </div>
+  useEffect(() => audioLevels.sync(allStreams), [allStreams]);
 
-        {/* ── Single footer row — z-30, sheet (z-35) covers it when chat is open ── */}
-        <div
-          className="absolute z-30"
-          style={{
-            bottom: 0,
-            left: 0,
-            right: 0,
-            paddingBottom: "env(safe-area-inset-bottom)",
-            background: "rgba(10, 7, 4, 0.72)",
-            backdropFilter: "blur(18px)",
-            WebkitBackdropFilter: "blur(18px)",
-            borderTop: "1px solid rgba(255,255,255,0.055)",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "12px",
-              padding: "10px 16px 10px",
-            }}
-          >
-            {role === "participant" ? (
-              <>
-                <ControlBtn onClick={handleToggleMute} active={muted} title={muted ? "Unmute" : "Mute mic"}>
-                  {muted ? (
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 9.75L19.5 12m0 0l2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
-                    </svg>
-                  ) : (
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
-                    </svg>
-                  )}
-                </ControlBtn>
-                <ControlBtn onClick={handleToggleCamera} active={cameraOff} title={cameraOff ? "Turn camera on" : "Turn camera off"}>
-                  {cameraOff ? (
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M12 18.75H4.5a2.25 2.25 0 01-2.25-2.25V9m12.841 8.909L6.75 6.75m0 0L4.5 4.5M6.75 6.75l-.75-.75" />
-                    </svg>
-                  ) : (
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9A2.25 2.25 0 0013.5 5.25h-9A2.25 2.25 0 002.25 7.5v9A2.25 2.25 0 004.5 18.75z" />
-                    </svg>
-                  )}
-                </ControlBtn>
-                <ControlBtn onClick={handleLeaveSeat} active={false} title="Leave seat" danger>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
-                  </svg>
-                </ControlBtn>
-                <ControlBtn onClick={handleLeaveRoom} active={false} title="Leave room" severe>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5.636 5.636a9 9 0 1012.728 12.728M12 3v9m0 0l3-3m-3 3L9 9" />
-                  </svg>
-                </ControlBtn>
-              </>
-            ) : (
-              <>
-                {seatsAvailable && (
-                  <button
-                    onClick={handleTakeSeat}
-                    style={{
-                      height: "40px",
-                      padding: "0 20px",
-                      borderRadius: "20px",
-                      background: "transparent",
-                      border: "1px solid rgba(200, 155, 85, 0.28)",
-                      color: "rgba(225, 185, 130, 0.75)",
-                      fontSize: "13px",
-                      letterSpacing: "0.04em",
-                      cursor: "pointer",
-                      WebkitTapHighlightColor: "transparent",
-                    }}
-                  >
-                    join seat
-                  </button>
-                )}
-                <button
-                  onClick={handleLeaveRoom}
-                  style={{
-                    height: "40px",
-                    padding: "0 20px",
-                    borderRadius: "20px",
-                    background: "transparent",
-                    border: "1px solid rgba(160, 60, 40, 0.25)",
-                    color: "rgba(210, 100, 75, 0.6)",
-                    fontSize: "13px",
-                    letterSpacing: "0.04em",
-                    cursor: "pointer",
-                    WebkitTapHighlightColor: "transparent",
-                  }}
-                >
-                  leave room
-                </button>
-              </>
-            )}
+  const insets = useMemo(() => {
+    if (mobile) return { top: 60, right: 10, bottom: 96, left: 10 };
+    return { top: 64, right: chatOpen ? CHAT_WIDTH + 36 : 24, bottom: 100, left: 24 };
+  }, [mobile, chatOpen]);
 
-            {/* Chat toggle — same row as other controls */}
-            <ControlBtn
-              onClick={() => setMobileChatExpanded((v) => !v)}
-              active={mobileChatExpanded}
-              title={mobileChatExpanded ? "Close chat" : "Open chat"}
-            >
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
-                <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
-              </svg>
-            </ControlBtn>
-          </div>
-        </div>
-
-        {/* Mobile chat overlay — sheet (z-35) covers full footer when open.
-            chatBarHeight = 1px border + 10px top pad + 48px buttons + 10px bot pad */}
-        <MobileChatOverlay
-          items={feedItems}
-          myName={localName}
-          expanded={mobileChatExpanded}
-          onExpand={() => setMobileChatExpanded(true)}
-          onCollapse={() => setMobileChatExpanded(false)}
-          onSend={handleSendChat}
-          chatBarHeight={69}
-        />
-      </div>
-    );
-  }
-
-  // ── Desktop layout ─────────────────────────────────────────────────────────
   return (
-    <div
-      className="relative overflow-hidden"
-      style={{
-        width: "100%",
-        height: "100dvh",
-        backgroundColor: "#1a1510",
-      }}
-    >
-      {/* Ambient fire glow */}
-      <div
-        className="pointer-events-none absolute inset-0 animate-fire-breathe"
-        style={{
-          background:
-            "radial-gradient(ellipse 70% 60% at 50% 50%, rgba(190,80,10,0.07) 0%, transparent 70%)",
-        }}
-      />
+    <>
+      <FireCanvas />
+      <AudioSink streams={streams} myId={me.sid} onBlocked={onAudioBlocked} />
 
-      {/* Video — always full canvas; chat floats over as transparent overlay */}
-      <div className="absolute inset-0">
-        <VideoGrid
-          seats={roomState.seats}
-          streams={gridStreams}
-          localSessionId={roomState.your_session_id}
-          view={view}
-          audioLevels={audioLevels}
-          localCameraOff={cameraOff}
+      {phase === "landing" || !room || !me.role ? (
+        <Landing
+          seats={seats}
+          audienceCount={room?.audience_count ?? 0}
+          connected={ws === "open"}
+          joining={joining}
+          onJoin={handleJoin}
         />
-      </div>
-
-      {/* Floating seat indicator */}
-      <div
-        className="absolute z-10 pointer-events-none"
-        style={{
-          bottom: role === "participant" ? "70px" : "20px",
-          left: "50%",
-          transform: "translateX(-50%)",
-          transition: "bottom 0.3s ease",
-        }}
-      >
-        <SeatBar
-          seats={roomState.seats}
-          audienceCount={roomState.audience_count}
-        />
-      </div>
-
-      {/* Audience controls */}
-      {role === "audience" && (
-        <div
-          className="absolute z-10 flex items-center justify-center"
-          style={{ bottom: "16px", left: 0, right: 0, gap: "14px", display: "flex" }}
-        >
-          {seatsAvailable && (
-            <button
-              onClick={handleTakeSeat}
-              title="Join a seat"
-              style={{
-                height: "40px",
-                padding: "0 20px",
-                borderRadius: "20px",
-                background: "rgba(22, 15, 9, 0.82)",
-                backdropFilter: "blur(10px)",
-                border: "1px solid rgba(200, 155, 85, 0.22)",
-                color: "rgba(225, 185, 130, 0.72)",
-                fontSize: "13px",
-                letterSpacing: "0.04em",
-                cursor: "pointer",
-                transition: "border-color 0.3s ease, color 0.3s ease",
-              }}
-            >
-              join seat
-            </button>
-          )}
-          <button
-            onClick={handleLeaveRoom}
-            title="Leave room"
-            style={{
-              height: "40px",
-              padding: "0 20px",
-              borderRadius: "20px",
-              background: "rgba(22, 15, 9, 0.82)",
-              backdropFilter: "blur(10px)",
-              border: "1px solid rgba(160, 60, 40, 0.2)",
-              color: "rgba(210, 100, 75, 0.55)",
-              fontSize: "13px",
-              letterSpacing: "0.04em",
-              cursor: "pointer",
-              transition: "border-color 0.3s ease, color 0.3s ease",
-            }}
-          >
-            leave room
-          </button>
-          <ControlBtn
-            onClick={() => setView((v) => (v === "grid" ? "circle" : "grid"))}
-            active={false}
-            title={view === "grid" ? "Circle view" : "Grid view"}
-          >
-            <ViewToggleIcon view={view} />
-          </ControlBtn>
+      ) : (
+        <div style={{ animation: "curtain 0.9s var(--ease) both" }}>
+          <SeatBar seats={seats} audienceCount={room.audience_count} ws={ws} />
+          <Stage
+            seats={occupied}
+            myId={me.sid}
+            streams={allStreams}
+            peers={peers}
+            view={view}
+            localCam={cam}
+            localMic={mic}
+            insets={insets}
+          />
+          <Chat
+            items={feed}
+            myId={me.sid}
+            myName={me.name}
+            open={chatOpen}
+            mobile={mobile}
+            onOpen={() => setChatOpen(true)}
+            onClose={() => setChatOpen(false)}
+            onSend={sendChat}
+          />
+          <Dock
+            role={me.role}
+            mic={mic}
+            cam={cam}
+            hasMic={!!local?.getAudioTracks().length}
+            seatsAvailable={occupied.length < 8}
+            chatOpen={chatOpen}
+            unread={unread}
+            view={view}
+            compact={mobile}
+            onToggleMic={toggleMic}
+            onToggleCam={toggleCam}
+            onReact={react}
+            onToggleChat={() => setChatOpen((o) => !o)}
+            onToggleView={() => setView((v) => (v === "grid" ? "circle" : "grid"))}
+            onTakeSeat={takeSeat}
+            onLeaveSeat={leaveSeat}
+            onLeaveRoom={leaveRoom}
+          />
+          <Reactions items={reactions} />
         </div>
       )}
 
-      {/* Participant controls */}
-      {role === "participant" && (
-        <div
-          className="absolute z-10 flex items-center justify-center"
-          style={{ bottom: "16px", left: 0, right: 0, gap: "14px", display: "flex" }}
-        >
-          <ControlBtn
-            onClick={handleToggleMute}
-            active={muted}
-            title={muted ? "Unmute" : "Mute mic"}
-          >
-            {muted ? (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path strokeLinecap="round" strokeLinejoin="round"
-                  d="M17.25 9.75L19.5 12m0 0l2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
-              </svg>
-            ) : (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path strokeLinecap="round" strokeLinejoin="round"
-                  d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
-              </svg>
-            )}
-          </ControlBtn>
-
-          <ControlBtn
-            onClick={handleToggleCamera}
-            active={cameraOff}
-            title={cameraOff ? "Turn camera on" : "Turn camera off"}
-          >
-            {cameraOff ? (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path strokeLinecap="round" strokeLinejoin="round"
-                  d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M12 18.75H4.5a2.25 2.25 0 01-2.25-2.25V9m12.841 8.909L6.75 6.75m0 0L4.5 4.5M6.75 6.75l-.75-.75" />
-              </svg>
-            ) : (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path strokeLinecap="round" strokeLinejoin="round"
-                  d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9A2.25 2.25 0 0013.5 5.25h-9A2.25 2.25 0 002.25 7.5v9A2.25 2.25 0 004.5 18.75z" />
-              </svg>
-            )}
-          </ControlBtn>
-
-          <ControlBtn
-            onClick={handleLeaveSeat}
-            active={false}
-            title="Leave seat"
-            danger
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path strokeLinecap="round" strokeLinejoin="round"
-                d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
-            </svg>
-          </ControlBtn>
-
-          <ControlBtn
-            onClick={handleLeaveRoom}
-            active={false}
-            title="Leave room"
-            severe
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path strokeLinecap="round" strokeLinejoin="round"
-                d="M5.636 5.636a9 9 0 1012.728 12.728M12 3v9m0 0l3-3m-3 3L9 9" />
-            </svg>
-          </ControlBtn>
-
-          <ControlBtn
-            onClick={() => setView((v) => (v === "grid" ? "circle" : "grid"))}
-            active={false}
-            title={view === "grid" ? "Circle view" : "Grid view"}
-          >
-            <ViewToggleIcon view={view} />
-          </ControlBtn>
-        </div>
-      )}
-
-      {/* Chat — always-visible transparent overlay on the right */}
-      <div
-        className="absolute top-0 right-0 h-full z-20"
-        style={{ width: "276px" }}
-      >
-        <Chat
-          items={feedItems}
-          myName={localName}
-          role={role}
-          seatsAvailable={seatsAvailable}
-          onSend={handleSendChat}
-          onTakeSeat={handleTakeSeat}
-          onLeaveRoom={handleLeaveRoom}
-          transparent
-        />
-      </div>
-    </div>
+      <Notice
+        text={audioBlocked ? "tap anywhere to turn on sound" : notice}
+        onClick={audioBlocked ? () => setAudioBlocked(false) : undefined}
+      />
+      {hud && <DebugHud seats={occupied} myId={me.sid} role={me.role} />}
+    </>
   );
 }
-
-
-function ViewToggleIcon({ view }: { view: "grid" | "circle" }) {
-  return view === "grid" ? (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <circle cx="12" cy="12" r="9" />
-      <circle cx="12" cy="3" r="1.5" fill="currentColor" stroke="none" />
-      <circle cx="12" cy="21" r="1.5" fill="currentColor" stroke="none" />
-      <circle cx="3" cy="12" r="1.5" fill="currentColor" stroke="none" />
-      <circle cx="21" cy="12" r="1.5" fill="currentColor" stroke="none" />
-    </svg>
-  ) : (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <rect x="3" y="3" width="7" height="7" rx="1" />
-      <rect x="14" y="3" width="7" height="7" rx="1" />
-      <rect x="3" y="14" width="7" height="7" rx="1" />
-      <rect x="14" y="14" width="7" height="7" rx="1" />
-    </svg>
-  );
-}
-
-function ControlBtn({
-  children,
-  onClick,
-  active,
-  danger,
-  severe,
-  title,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  active: boolean;
-  danger?: boolean;
-  severe?: boolean;
-  title?: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      style={{
-        width: "48px",
-        height: "48px",
-        borderRadius: "50%",
-        background: active
-          ? "rgba(210, 55, 55, 0.18)"
-          : severe
-          ? "rgba(180, 40, 40, 0.22)"
-          : "rgba(22, 15, 9, 0.78)",
-        backdropFilter: "blur(10px)",
-        border: severe ? "1px solid rgba(200, 60, 60, 0.25)" : "none",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        color: active
-          ? "#e74c3c"
-          : severe
-          ? "rgba(220, 100, 80, 0.75)"
-          : danger
-          ? "rgba(220, 160, 100, 0.5)"
-          : "rgba(225, 190, 145, 0.6)",
-        cursor: "pointer",
-        boxShadow: active ? "0 0 16px 3px rgba(210,55,55,0.2)" : "none",
-        transition:
-          "background 0.32s ease, color 0.32s ease, box-shadow 0.32s ease",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
