@@ -299,7 +299,7 @@ export default function FireCanvas() {
         seen.add(p.sid);
         let s = smooth.get(p.sid);
         if (!s) smooth.set(p.sid, (s = { lvl: 0, vis: 0, rect: [0, 0, 0, 0] }));
-        const target = audioLevels.get(p.sid);
+        const target = audioLevels.fire(p.sid);
         s.lvl += (target - s.lvl) * Math.min(1, dtMs / 90);
         s.vis += ((p.leaving ? 0 : 1) - s.vis) * Math.min(1, dtMs / 500);
         if (p.el?.isConnected) {

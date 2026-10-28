@@ -3,7 +3,9 @@
 // One AudioContext, one AnalyserNode per audio track. A RAF loop computes a
 // perceptual 0–1 level per session and writes it straight onto bound DOM nodes
 // as the CSS variable --lvl (and data-speaking), so speaking never re-renders
-// the React tree. The fire shader reads levels directly via audioLevels.get().
+// the React tree. The fire shader reads its own, much less sensitive level
+// via audioLevels.fire(): normal talking gives a modest flicker, and it takes
+// actual shouting to drive it to full blaze.
 
 interface Entry {
   trackId: string;
@@ -11,12 +13,18 @@ interface Entry {
   analyser: AnalyserNode;
   data: Float32Array<ArrayBuffer>;
   level: number;
+  fire: number;
   speaking: boolean;
   lastLoud: number;
 }
 
 const FLOOR_DB = -58;
 const CEIL_DB = -18;
+// Fire range sits well above conversational speech (~-30..-20 dB after AGC),
+// and the curve keeps the low end quiet so only a yell reaches the top.
+const FIRE_FLOOR_DB = -40;
+const FIRE_CEIL_DB = -6;
+const FIRE_CURVE = 2.2;
 
 let ctx: AudioContext | null = null;
 const entries = new Map<string, Entry>();
@@ -53,6 +61,8 @@ function frame() {
     const raw = Math.max(0, Math.min(1, (db - FLOOR_DB) / (CEIL_DB - FLOOR_DB)));
     // Fast attack, slow release — glow jumps with a syllable, then settles
     e.level += (raw - e.level) * (raw > e.level ? 0.45 : 0.08);
+    const fireRaw = Math.max(0, Math.min(1, (db - FIRE_FLOOR_DB) / (FIRE_CEIL_DB - FIRE_FLOOR_DB))) ** FIRE_CURVE;
+    e.fire += (fireRaw - e.fire) * (fireRaw > e.fire ? 0.3 : 0.05);
     if (e.level > 0.22) e.lastLoud = now;
     e.speaking = e.level > 0.22 || now - e.lastLoud < 450;
   }
@@ -92,7 +102,7 @@ export const audioLevels = {
         source.connect(analyser);
         entries.set(sid, {
           trackId: track.id, source, analyser, data: new Float32Array(analyser.fftSize),
-          level: 0, speaking: false, lastLoud: 0,
+          level: 0, fire: 0, speaking: false, lastLoud: 0,
         });
       } catch {
         // AudioContext unavailable — glow simply stays calm
@@ -114,6 +124,11 @@ export const audioLevels = {
 
   get(sid: string): number {
     return entries.get(sid)?.level ?? 0;
+  },
+
+  /** Fire intensity 0–1: ~0.15 for normal talking, near 1 only when shouting. */
+  fire(sid: string): number {
+    return entries.get(sid)?.fire ?? 0;
   },
 
   /** Browsers start AudioContexts suspended until a user gesture. */
