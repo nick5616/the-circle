@@ -124,17 +124,21 @@ Two-panel layout:
 
 ## WebSocket Message Protocol
 
-All messages are JSON `{type, payload}` over one websocket per client
-(`/ws/room/?sid=<id>&token=<token>` when resuming). See `frontend/src/types.ts`.
+All messages are JSON `{type, payload}` over one websocket per client, and each socket belongs
+to one room: `/ws/room/?room=<code>&sid=<id>&token=<token>`. `room` is left out for the
+main room, and `sid`/`token` are only sent when resuming. A session never moves between
+rooms, so switching rooms means a `bye`, then a fresh socket. See `frontend/src/types.ts`.
 
-**Client → Server:** `join {name, role}`, `chat {content}`,
-`signal {target, pcid, description? | candidate? | kick?}`, `media {mic, cam}`,
-`react {emoji}`, `take_seat`, `leave_seat`, `ping {t}`, `bye`, `telemetry {...}`
+**Client → Server:** `join {name, role}`, `chat {content}` (`/roll`, `/flip`, `/me`, `/ask`,
+`/spark` are handled server-side), `signal {target, pcid, description? | candidate? | kick?}`,
+`media {mic, cam, screen}`, `react {emoji}`, `toss {target, item}`, `spark`, `take_seat`,
+`leave_seat`, `ping {t}`, `bye`, `telemetry {...}`
 
-**Server → Client:** `hello {session_id, token, resumed, role, name, ice_servers, grace_seconds}`,
-`joined {role, name}`, `room_state {seats[8], audience_count, ...}` (seats carry
-`mic`, `cam`, `away`), `chat`, `chat_history`, `signal {from, pcid, ...}`,
-`peer_gone {session_id}`, `reaction`, `seat_denied`, `pong`
+**Server → Client:** `hello {session_id, token, resumed, role, name, room, ice_servers, grace_seconds}`,
+`joined {role, name}`, `room_state {room, seats[8], audience_count, spark, ...}` (seats carry
+`mic`, `cam`, `screen`, `screen_at`, `away`), `chat` (optional `flavor`: me/roll/flip/ask/spark),
+`chat_history`, `signal {from, pcid, ...}`, `peer_gone {session_id}`, `reaction`,
+`toss {from, name, to, item}`, `seat_denied`, `pong`
 
 ---
 
@@ -145,6 +149,11 @@ links declaratively from room state, and every pair has exactly one offerer:
 
 - participant ↔ participant: the lower session id offers
 - audience → participant: the audience member offers, receive-only
+
+Every link has four transceivers in a fixed order: mic, camera, screen video, screen
+audio. The screen slots stay idle until someone shares. Starting or stopping a share
+is just `replaceTrack`, with no renegotiation, and the receiver tells the slots apart by
+transceiver index (m-line order).
 
 Each `RTCPeerConnection` has a random `pcid`, and all signals carry it, so stale
 signals for a replaced connection are ignored. Recovery escalates: ICE restart on
@@ -175,10 +184,13 @@ Key responsibilities:
 ## Redis Keys
 
 ```
-room:seats          Hash    { session_id → JSON(name, idx, joined_at, mic, cam, away) }
+room:seats          Hash    { session_id → JSON(name, idx, joined_at, mic, cam, screen, screen_at, away) }
 room:audience       Hash    { session_id → name }
 room:chat           List    JSON chat messages, LTRIM to 100
-sess:<id>           Hash    { token, name, role, channel, gen }, TTL 1h
+room:spark          String  JSON {id, text, by, at}, the current question card
+room:<code>:*       …       the same four keys for a private room (chat/spark expire after 6h idle)
+rooms:active        Set     room codes the reaper walks (re-added on every ping)
+sess:<id>           Hash    { token, name, role, room, channel, gen }, TTL 1h
 alive:<id>          String  heartbeat, TTL 45s (expired → session reaped)
 ```
 

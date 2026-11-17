@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { audioLevels } from "../audio";
 import { hashNameToColor } from "../fireColors";
-import type { PeerInfo, Seat } from "../types";
+import { THROWABLES, type PeerInfo, type Seat, type Throwable } from "../types";
 import type { Rect } from "../layout";
 
 interface Props {
@@ -15,12 +15,13 @@ interface Props {
   micOn: boolean;
   peer?: PeerInfo;
   register: (sid: string, el: HTMLElement | null) => void;
+  onToss?: (sid: string, item: Throwable) => void;
 }
 
 const QUALITY_DOTS = { good: 3, fair: 2, poor: 1, unknown: 0 } as const;
 const QUALITY_COLOR = { good: "#ffc46b", fair: "#ff9a5a", poor: "#ff8fab", unknown: "transparent" } as const;
 
-function Tile({ seat, rect, leaving, stream, isLocal, camOn, micOn, peer, register }: Props) {
+function Tile({ seat, rect, leaving, stream, isLocal, camOn, micOn, peer, register, onToss }: Props) {
   const color = hashNameToColor(seat.name).hex;
   const sid = seat.session_id;
   const outer = useRef<HTMLDivElement | null>(null);
@@ -28,6 +29,8 @@ function Tile({ seat, rect, leaving, stream, isLocal, camOn, micOn, peer, regist
   const [live, setLive] = useState(false); // video element is actually showing frames
   const [stalled, setStalled] = useState(false);
   const [mirrored, setMirrored] = useState(true);
+  // What you'd throw next — changes after every throw so it stays a little surprising
+  const [ammo, setAmmo] = useState<Throwable>(() => THROWABLES[Math.floor(Math.random() * THROWABLES.length)]);
 
   const setOuter = useCallback(
     (el: HTMLDivElement | null) => {
@@ -149,6 +152,22 @@ function Tile({ seat, rect, leaving, stream, isLocal, camOn, micOn, peer, regist
             }}
           >
             {mirrored ? "mirror ✓" : "mirror"}
+          </button>
+        )}
+
+        {onToss && (
+          <button
+            className="toss-btn"
+            data-testid="toss"
+            title={`toss a ${ammo} at ${seat.name}`}
+            aria-label={`toss something at ${seat.name}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToss(sid, ammo);
+              setAmmo(THROWABLES[Math.floor(Math.random() * THROWABLES.length)]);
+            }}
+          >
+            {ammo}
           </button>
         )}
 

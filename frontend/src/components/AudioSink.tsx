@@ -2,6 +2,7 @@ import { memo, useEffect, useRef } from "react";
 
 interface Props {
   streams: Map<string, MediaStream>;
+  screens: Map<string, MediaStream>; // shared-screen streams carry tab audio
   myId: string;
   onBlocked: () => void;
 }
@@ -9,17 +10,20 @@ interface Props {
 // Remote audio plays through its own hidden <audio> elements, never through
 // the tile's <video>. So a camera turning off, a tile re-mounting or a layout
 // change can never cut someone's voice. Video elements are always muted.
-function AudioSink({ streams, myId, onBlocked }: Props) {
+function AudioSink({ streams, screens, myId, onBlocked }: Props) {
   return (
     <div hidden>
       {[...streams].filter(([sid]) => sid !== myId).map(([sid, stream]) => (
         <RemoteAudio key={sid} stream={stream} onBlocked={onBlocked} />
       ))}
+      {[...screens].filter(([sid]) => sid !== myId).map(([sid, stream]) => (
+        <RemoteAudio key={`screen-${sid}`} stream={stream} onBlocked={onBlocked} kind="screen" />
+      ))}
     </div>
   );
 }
 
-function RemoteAudio({ stream, onBlocked }: { stream: MediaStream; onBlocked: () => void }) {
+function RemoteAudio({ stream, onBlocked, kind = "voice" }: { stream: MediaStream; onBlocked: () => void; kind?: "voice" | "screen" }) {
   const ref = useRef<HTMLAudioElement>(null);
   useEffect(() => {
     const el = ref.current!;
@@ -32,7 +36,7 @@ function RemoteAudio({ stream, onBlocked }: { stream: MediaStream; onBlocked: ()
     stream.addEventListener("addtrack", play);
     return () => stream.removeEventListener("addtrack", play);
   }, [stream, onBlocked]);
-  return <audio ref={ref} autoPlay data-testid="remote-audio" />;
+  return <audio ref={ref} autoPlay data-testid={kind === "voice" ? "remote-audio" : "screen-audio"} />;
 }
 
 export default memo(AudioSink);

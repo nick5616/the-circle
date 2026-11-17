@@ -7,6 +7,8 @@ interface Props {
   mic: boolean;
   cam: boolean;
   hasMic: boolean;
+  canShare: boolean;
+  sharing: boolean;
   seatsAvailable: boolean;
   chatOpen: boolean;
   unread: number;
@@ -15,6 +17,9 @@ interface Props {
   onToggleMic: () => void;
   onToggleCam: () => void;
   onReact: (e: Reaction) => void;
+  onToggleShare: () => void;
+  onSpark: () => void;
+  onChatCommand: (cmd: string) => void;
   onToggleChat: () => void;
   onToggleView: () => void;
   onTakeSeat: () => void;
@@ -59,6 +64,11 @@ export default function Dock(p: Props) {
             <Btn testid="toggle-cam" tip={p.cam ? "camera off (v)" : "camera on (v)"} off={!p.cam} onClick={p.onToggleCam}>
               {p.cam ? <CamIcon /> : <CamOffIcon />}
             </Btn>
+            {p.canShare && (
+              <Btn testid="toggle-share" tip={p.sharing ? "stop sharing (s)" : "share your screen (s)"} on={p.sharing} onClick={p.onToggleShare}>
+                <ScreenIcon />
+              </Btn>
+            )}
           </>
         ) : (
           p.seatsAvailable && (
@@ -82,7 +92,7 @@ export default function Dock(p: Props) {
         <Sep />
 
         <div ref={trayRef} style={{ position: "relative" }}>
-          <Btn testid="react" tip="react" on={tray} onClick={() => setTray((t) => !t)}>
+          <Btn testid="react" tip="fun stuff" on={tray} onClick={() => setTray((t) => !t)}>
             <SparkIcon />
           </Btn>
           {tray && (
@@ -90,9 +100,10 @@ export default function Dock(p: Props) {
               className="glass"
               style={{
                 position: "absolute", bottom: "calc(100% + 12px)", left: "50%", translate: "-50% 0",
-                display: "flex", gap: 2, padding: 6, borderRadius: 20, animation: "rise-in 0.35s var(--spring) both",
+                display: "flex", flexDirection: "column", gap: 4, padding: 6, borderRadius: 20, animation: "rise-in 0.35s var(--spring) both",
               }}
             >
+              <div style={{ display: "flex", gap: 2 }}>
               {REACTIONS.map((e, i) => (
                 <button
                   key={e}
@@ -109,6 +120,18 @@ export default function Dock(p: Props) {
                   {e}
                 </button>
               ))}
+              </div>
+              <div style={{ display: "flex", gap: 4, justifyContent: "center", padding: "0 2px 2px" }}>
+                <button className="chip" data-testid="draw-spark" onClick={() => { p.onSpark(); setTray(false); }} title="pull a question card from the fire">
+                  ✦ a question
+                </button>
+                <button className="chip" data-testid="roll-dice" onClick={() => p.onChatCommand("/roll")} title="roll a die for everyone to see">
+                  🎲 roll
+                </button>
+                <button className="chip" data-testid="flip-coin" onClick={() => p.onChatCommand("/flip")} title="flip a coin">
+                  🪙 flip
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -194,6 +217,9 @@ function CamOffIcon() {
 }
 function SparkIcon() {
   return (<svg {...S}><path d="M12 3.2c.6 4.3 2.5 6.3 6.6 6.9-4.1.6-6 2.6-6.6 6.9-.6-4.3-2.5-6.3-6.6-6.9 4.1-.6 6-2.6 6.6-6.9z" /><path d="M18.6 16.4c.2 1.6.9 2.3 2.4 2.5-1.5.2-2.2.9-2.4 2.5-.2-1.6-.9-2.3-2.4-2.5 1.5-.2 2.2-.9 2.4-2.5z" /></svg>);
+}
+function ScreenIcon() {
+  return (<svg {...S}><rect x="2.8" y="4.2" width="18.4" height="12.4" rx="2.6" /><path d="M8.6 20.2h6.8M12 16.6v3.6M9.4 11.4l2.6-2.6 2.6 2.6M12 8.8v5" /></svg>);
 }
 function ChatIcon() {
   return (<svg {...S}><path d="M20.4 11.6c0 4.2-3.8 7.4-8.4 7.4-1.3 0-2.5-.2-3.6-.7L3.6 20l1.4-3.9c-.9-1.3-1.4-2.8-1.4-4.5 0-4.2 3.8-7.4 8.4-7.4s8.4 3.2 8.4 7.4z" /></svg>);

@@ -99,3 +99,22 @@ function overlaps(rs: Rect[]): boolean {
   }
   return false;
 }
+
+// Someone's sharing their screen: it takes the big space and everyone else
+// gathers in a strip beside it (wide screens) or under it (tall ones). The fire
+// sinks low and dims so it doesn't fight the picture.
+export function spotlightLayout(n: number, W: number, H: number, aspect: number): Layout & { screen: Rect } {
+  const side = W / H > 1.25;
+  let screen: Rect;
+  let rects: Rect[] = [];
+  if (side) {
+    const stripW = n ? Math.min(340, Math.max(170, W * 0.22)) : 0;
+    screen = { x: 0, y: 0, w: W - stripW - (n ? GAP : 0), h: H };
+    rects = gridLayout(n, stripW, H, aspect).rects.map((r) => ({ ...r, x: r.x + screen.w + GAP }));
+  } else {
+    const stripH = n ? Math.min(230, Math.max(100, H * 0.27)) : 0;
+    screen = { x: 0, y: 0, w: W, h: H - stripH - (n ? GAP : 0) };
+    rects = gridLayout(n, W, stripH, aspect).rects.map((r) => ({ ...r, y: r.y + screen.h + GAP }));
+  }
+  return { rects, screen, fire: { x: screen.x + screen.w / 2, y: H + 40, size: Math.min(160, H * 0.22) }, fireAlpha: 0.35 };
+}

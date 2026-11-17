@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import type { FeedItem } from "../types";
 import { hashNameToColor } from "../fireColors";
 
@@ -15,6 +16,9 @@ interface Props {
 
 export const CHAT_WIDTH = 330;
 
+// The composer quietly teaches the fun commands
+const PLACEHOLDERS = ["say something", "say something (or /roll)", "say something (or /flip)", "/ask the fire anything", "/me does a little dance"];
+
 function formatTime(iso: string): string {
   try {
     return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -25,6 +29,7 @@ function formatTime(iso: string): string {
 
 export default function Chat({ items, myId, myName, open, mobile, onClose, onOpen, onSend }: Props) {
   const [draft, setDraft] = useState("");
+  const [placeholder, setPlaceholder] = useState(0);
   const [toasts, setToasts] = useState<FeedItem[]>([]);
   const scroller = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -70,6 +75,7 @@ export default function Chat({ items, myId, myName, open, mobile, onClose, onOpe
     if (!text) return;
     onSend(text);
     setDraft("");
+    setPlaceholder((n) => (n + 1) % PLACEHOLDERS.length);
     stickToBottom.current = true;
   }
 
@@ -109,7 +115,7 @@ export default function Chat({ items, myId, myName, open, mobile, onClose, onOpe
           if (e.key === "Escape") onClose();
         }}
         maxLength={500}
-        placeholder="say something"
+        placeholder={PLACEHOLDERS[placeholder]}
         autoComplete="off"
         enterKeyHint="send"
         style={{
@@ -223,6 +229,22 @@ function Entry({ item, mine }: { item: FeedItem; mine: boolean }) {
     );
   }
   const c = hashNameToColor(item.sender).hex;
+  if (item.flavor === "spark") {
+    return (
+      <div className="msg spark-msg" style={{ "--c": c } as CSSProperties}>
+        <span className="hand" style={{ fontSize: 17, color: c }}>✦ {item.sender} pulled a card</span>
+        <p className="display" style={{ margin: "2px 0 0", fontSize: 15.5, fontStyle: "italic", lineHeight: 1.35, color: "var(--ink)" }}>{item.content}</p>
+      </div>
+    );
+  }
+  if (item.flavor) {
+    // /me, /roll, /flip, /ask: told like something that happened around the fire
+    return (
+      <p className="msg hand" data-flavor={item.flavor} style={{ margin: "2px 6px", textAlign: "center", fontSize: 19, lineHeight: 1.2, color: "var(--ink-2)" }}>
+        <span style={{ color: c }}>{item.sender}</span> {item.content}
+      </p>
+    );
+  }
   return (
     <div className="msg" style={{ display: "flex", flexDirection: "column", alignItems: mine ? "flex-end" : "flex-start" }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "0 4px" }}>

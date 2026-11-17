@@ -18,8 +18,23 @@ import type { PeerHealth, PeerInfo, PeerQuality, Role, SignalPayload } from "./t
 //   not connected 15s after creation → rebuild with a new pcid (offerer)
 //   answerer missing its link        → "kick" the offerer to (re)offer
 //   answerer link dead for 20s       → close it; the kick path takes over
+//
+// Every link carries four transceivers in a fixed order (see SLOTS): mic,
+// camera, screen video, screen audio. The screen slots sit idle until someone
+// shares; starting or stopping a share is just replaceTrack — no renegotiation,
+// so it can't knock a working call over. The receiver tells the slots apart by
+// transceiver index, which is m-line order on both sides.
 
 type Side = "offer" | "answer";
+export type Source = "mic" | "cam" | "screen" | "screenAudio";
+
+const SLOTS: { kind: "audio" | "video"; src: Source }[] = [
+  { kind: "audio", src: "mic" },
+  { kind: "video", src: "cam" },
+  { kind: "video", src: "screen" },
+  { kind: "audio", src: "screenAudio" },
+];
+const isScreenSlot = (i: number) => SLOTS[i]?.src === "screen" || SLOTS[i]?.src === "screenAudio";
 
 interface LinkStats {
   rtt?: number;
@@ -39,7 +54,8 @@ interface Link {
   pcid: string;
   pc: RTCPeerConnection;
   myRole: Role;
-  remote: MediaStream;
+  remote: MediaStream; // their mic + camera
+  screen: MediaStream; // their screen share (video + tab audio)
   created: number;
   downSince: number; // 0 while connected
   everConnected: boolean;
@@ -74,14 +90,16 @@ const links = new Map<string, Link>();
 const missingSince = new Map<string, number>();
 const lastKick = new Map<string, number>();
 const rebuilds = new Map<string, number>();
-const nullTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const nullTimers = new Map<string, ReturnType<typeof setTimeout>>(); // keyed by `${channel}:${sid}`
 
 let mySid = "";
 let myRole: Role | null = null;
 let seated: string[] = []; // participant sids other than me
 let localStream: MediaStream | null = null;
+const screenTracks: { screen: MediaStreamTrack | null; screenAudio: MediaStreamTrack | null } = { screen: null, screenAudio: null };
 let iceServers: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 let onStream: StreamCb = () => {};
+let onScreen: StreamCb = () => {};
 let onPeers: PeersCb = () => {};
 let peersDirty = false;
 let tickCount = 0;
@@ -121,18 +139,27 @@ function markPeers() {
   });
 }
 
-function emitStream(sid: string, stream: MediaStream | null, delay = 0) {
-  clearTimeout(nullTimers.get(sid));
-  nullTimers.delete(sid);
+function emitStream(sid: string, stream: MediaStream | null, delay = 0, channel: "cam" | "screen" = "cam") {
+  const key = `${channel}:${sid}`;
+  const cb = (s: MediaStream | null) => (channel === "cam" ? onStream : onScreen)(sid, s);
+  clearTimeout(nullTimers.get(key));
+  nullTimers.delete(key);
   if (stream || delay === 0) {
-    onStream(sid, stream);
+    cb(stream);
     return;
   }
   // Hold the old (frozen) frame briefly so a replacement link doesn't flash empty
-  nullTimers.set(sid, setTimeout(() => {
-    nullTimers.delete(sid);
-    if (!links.has(sid)) onStream(sid, null);
+  nullTimers.set(key, setTimeout(() => {
+    nullTimers.delete(key);
+    if (!links.has(sid)) cb(null);
   }, delay));
+}
+
+function localTrack(src: Source): MediaStreamTrack | null {
+  if (myRole !== "participant") return null;
+  if (src === "mic") return localStream?.getAudioTracks()[0] ?? null;
+  if (src === "cam") return localStream?.getVideoTracks()[0] ?? null;
+  return screenTracks[src];
 }
 
 function healthOf(L: Link): PeerHealth {
@@ -149,7 +176,7 @@ function newLink(sid: string, side: Side, pcid: string): Link {
     bundlePolicy: "max-bundle",
   });
   const L: Link = {
-    sid, side, pcid, pc, myRole: myRole!, remote: new MediaStream(), created: Date.now(), downSince: Date.now(),
+    sid, side, pcid, pc, myRole: myRole!, remote: new MediaStream(), screen: new MediaStream(), created: Date.now(), downSince: Date.now(),
     everConnected: false, chain: Promise.resolve(), pending: [], lastRestart: 0, closed: false,
     health: "connecting", quality: "unknown", stats: {},
   };
@@ -162,10 +189,12 @@ function newLink(sid: string, side: Side, pcid: string): Link {
     send(L, { candidate: candidate.toJSON() });
   };
 
-  pc.ontrack = ({ track }) => {
+  pc.ontrack = ({ track, transceiver }) => {
     if (L.closed) return;
-    if (!L.remote.getTracks().includes(track)) L.remote.addTrack(track);
-    emitStream(sid, L.remote);
+    const screen = isScreenSlot(pc.getTransceivers().indexOf(transceiver));
+    const into = screen ? L.screen : L.remote;
+    if (!into.getTracks().includes(track)) into.addTrack(track);
+    emitStream(sid, into, 0, screen ? "screen" : "cam");
   };
 
   pc.onconnectionstatechange = () => {
@@ -210,14 +239,16 @@ function closeLink(L: Link, why: string, holdMs = 1500) {
   if (links.get(L.sid) === L) links.delete(L.sid);
   telemetry.event("pc_close", { peer: short(L.sid), side: L.side, why });
   emitStream(L.sid, null, holdMs);
+  emitStream(L.sid, null, holdMs, "screen");
   markPeers();
 }
 
 function addLocalTracks(pc: RTCPeerConnection) {
-  for (const kind of ["audio", "video"] as const) {
-    const track = myRole === "participant" ? localStream?.getTracks().find((t) => t.kind === kind) : undefined;
-    if (track && localStream) pc.addTransceiver(track, { direction: "sendrecv", streams: [localStream] });
-    else if (myRole === "participant") pc.addTransceiver(kind, { direction: "sendrecv" }); // track may arrive later (camera turned on)
+  for (const { kind, src } of SLOTS) {
+    const track = localTrack(src);
+    const streams = localStream && (src === "mic" || src === "cam") ? [localStream] : [];
+    if (track) pc.addTransceiver(track, { direction: "sendrecv", streams });
+    else if (myRole === "participant") pc.addTransceiver(kind, { direction: "sendrecv" }); // track may arrive later (camera on, share started)
     else pc.addTransceiver(kind, { direction: "recvonly" });
   }
 }
@@ -268,17 +299,19 @@ async function answerOffer(L: Link, description: RTCSessionDescriptionInit) {
   await pc.setRemoteDescription(description);
   const dirs = sdpDirections(description.sdp ?? "");
   L.remoteSends = [...dirs.values()].some((d) => d === "sendrecv" || d === "sendonly");
-  for (const t of pc.getTransceivers()) {
+  const transceivers = pc.getTransceivers();
+  for (let i = 0; i < transceivers.length; i++) {
+    const t = transceivers[i];
     if (!t.mid) continue;
+    const slot = SLOTS[i];
     const offered = dirs.get(t.mid) ?? "sendrecv";
     const remoteSends = offered === "sendrecv" || offered === "sendonly";
     const remoteRecvs = offered === "sendrecv" || offered === "recvonly";
-    const kind = t.receiver.track.kind;
-    const track = myRole === "participant" ? localStream?.getTracks().find((x) => x.kind === kind) ?? null : null;
-    const weSend = myRole === "participant" && remoteRecvs;
+    const track = slot ? localTrack(slot.src) : null;
+    const weSend = myRole === "participant" && remoteRecvs && !!slot;
     if (weSend) {
       if (t.sender.track !== track) await t.sender.replaceTrack(track);
-      if (localStream) t.sender.setStreams?.(localStream);
+      if (localStream && !isScreenSlot(i)) t.sender.setStreams?.(localStream);
     }
     t.direction = weSend ? (remoteSends ? "sendrecv" : "sendonly") : remoteSends ? "recvonly" : "inactive";
   }
@@ -311,28 +344,40 @@ function onKick(from: string, theirPcid: string) {
 
 // ─── Bitrate policy ────────────────────────────────────────────────────────
 // A participant uploads one copy of their video per link, so the per-link cap
-// shrinks as the mesh grows. Audience links get a lighter stream.
+// shrinks as the mesh grows. Audience links get a lighter stream. While you
+// share your screen, the screen gets most of the budget and your camera
+// steps back (people are looking at the screen anyway).
 
 function applyBitrate() {
   if (myRole !== "participant") return;
   const all = [...links.values()].filter((L) => !L.closed);
   const mesh = all.filter((L) => seated.includes(L.sid));
   const serve = all.filter((L) => !seated.includes(L.sid));
+  const sharing = !!screenTracks.screen;
   for (const L of all) {
     const isMesh = seated.includes(L.sid);
-    const maxBitrate = isMesh
+    const camRate = isMesh
       ? Math.round(Math.min(1_200_000, Math.max(220_000, 2_400_000 / Math.max(1, mesh.length))))
       : serve.length > 8 ? 150_000 : 350_000;
+    const screenRate = isMesh
+      ? Math.round(Math.min(2_500_000, Math.max(600_000, 3_000_000 / Math.max(1, mesh.length))))
+      : serve.length > 8 ? 400_000 : 1_000_000;
+    const camMax = sharing ? Math.max(120_000, Math.round(camRate * 0.4)) : camRate;
     const scale = isMesh ? (mesh.length >= 5 ? 1.5 : 1) : serve.length > 8 ? 2 : 1.5;
-    const key = `${maxBitrate}:${scale}`;
+    const key = `${camMax}:${screenRate}:${scale}`;
     if (L.appliedBitrate === key) continue;
     L.appliedBitrate = key;
-    for (const sender of L.pc.getSenders()) {
+    const transceivers = L.pc.getTransceivers();
+    for (let i = 0; i < transceivers.length; i++) {
+      const sender = transceivers[i].sender;
       if (!sender.track) continue;
       const p = sender.getParameters();
       if (!p.encodings?.length) p.encodings = [{}];
-      if (sender.track.kind === "video") {
-        p.encodings[0].maxBitrate = maxBitrate;
+      if (SLOTS[i]?.src === "screen") {
+        p.encodings[0].maxBitrate = screenRate;
+        p.encodings[0].scaleResolutionDownBy = 1;
+      } else if (sender.track.kind === "video") {
+        p.encodings[0].maxBitrate = camMax;
         p.encodings[0].scaleResolutionDownBy = scale;
       } else {
         // Voice matters more than pixels when the network is tight
@@ -469,9 +514,10 @@ export const rtc = {
     if (servers?.length) iceServers = servers;
   },
 
-  setCallbacks(stream: StreamCb, peers: PeersCb) {
+  setCallbacks(stream: StreamCb, peers: PeersCb, screen: StreamCb) {
     onStream = stream;
     onPeers = peers;
+    onScreen = screen;
   },
 
   /** Tell the manager who we are and who is seated. Safe to call on every room_state. */
@@ -488,12 +534,13 @@ export const rtc = {
     localStream = stream;
   },
 
-  /** Swap (or remove) our outgoing track of one kind on every link — no renegotiation. */
-  async setLocalTrack(kind: "audio" | "video", track: MediaStreamTrack | null) {
-    for (const L of links.values()) {
-      for (const t of L.pc.getTransceivers()) {
-        if (t.receiver.track.kind !== kind) continue;
-        if (t.direction !== "sendrecv" && t.direction !== "sendonly") continue;
+  /** Swap (or remove) one of our outgoing tracks on every link — no renegotiation. */
+  async setLocalTrack(src: Source, track: MediaStreamTrack | null) {
+    if (src === "screen" || src === "screenAudio") screenTracks[src] = track;
+    const i = SLOTS.findIndex((s) => s.src === src);
+    for (const L of [...links.values()]) {
+      const t = L.pc.getTransceivers()[i];
+      if (t && (t.direction === "sendrecv" || t.direction === "sendonly")) {
         await t.sender.replaceTrack(track).catch(() => {});
       }
       L.appliedBitrate = undefined;
@@ -568,6 +615,7 @@ export const rtc = {
     mySid = "";
     myRole = null;
     seated = [];
+    screenTracks.screen = screenTracks.screenAudio = null;
   },
 
   /** Compact per-peer stats for telemetry + the debug HUD. */

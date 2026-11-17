@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "soak": "node soak.mjs",
+    "rooms": "node rooms.mjs",
     "netem": "bash netem.sh"
   },
   "devDependencies": {

@@ -44,7 +44,9 @@
     const r = await pc.getStats();
     const o = { id: pc.__hid, state: pc.connectionState, inV: null, inA: null, outV: [], pair: null };
     r.forEach((s) => {
-      if (s.type === "inbound-rtp" && s.kind === "video") {
+      // A link can carry several video receivers (e.g. an idle screen-share slot):
+      // measure the one actually carrying the most video
+      if (s.type === "inbound-rtp" && s.kind === "video" && (s.bytesReceived ?? 0) >= (o.inV?.bytes ?? -1)) {
         o.inV = {
           frames: s.framesDecoded ?? 0, bytes: s.bytesReceived ?? 0,
           lost: s.packetsLost ?? 0, recv: s.packetsReceived ?? 0,
@@ -52,7 +54,7 @@
           freezes: s.freezeCount ?? 0, freezeDur: s.totalFreezesDuration ?? 0,
         };
       }
-      if (s.type === "inbound-rtp" && s.kind === "audio") {
+      if (s.type === "inbound-rtp" && s.kind === "audio" && (s.bytesReceived ?? 0) >= (o.inA?.bytes ?? -1)) {
         o.inA = {
           bytes: s.bytesReceived ?? 0, lost: s.packetsLost ?? 0, recv: s.packetsReceived ?? 0,
           jitter: s.jitter ?? 0, concealed: s.concealedSamples ?? 0, total: s.totalSamplesReceived ?? 0,

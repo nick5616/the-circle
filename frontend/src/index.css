@@ -383,6 +383,251 @@ input:focus {
 }
 
 /* ------------------------------------------------------------------ */
+/* Chips: little hand-lettered buttons for the fun stuff                */
+/* ------------------------------------------------------------------ */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px 1px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 220, 180, 0.08);
+  color: var(--ink);
+  font-family: var(--font-hand);
+  font-size: 18px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.25s var(--ease), transform 0.35s var(--spring), color 0.25s var(--ease);
+}
+
+.chip:hover:not(:disabled) {
+  background: rgba(255, 196, 107, 0.18);
+  transform: translateY(-1px) rotate(-1.5deg);
+}
+
+.chip:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.chip .flame-dot {
+  width: 7px;
+  height: 9px;
+  background: var(--c);
+  box-shadow: 0 0 6px var(--c);
+}
+
+.chip-hot {
+  color: #2a0f12;
+  background: var(--rose);
+  box-shadow: 0 0 18px -4px rgba(255, 143, 171, 0.8);
+}
+
+.chip-hot:hover:not(:disabled) {
+  background: #ffa3bb;
+}
+
+.chip-big {
+  height: 42px;
+  padding: 0 18px 2px;
+  font-size: 21px;
+  background: linear-gradient(120deg, rgba(255, 196, 107, 0.16), rgba(255, 143, 171, 0.14));
+  box-shadow: inset 0 0 0 1px rgba(255, 196, 107, 0.18);
+}
+
+.chip-recent {
+  padding: 0;
+  gap: 0;
+  cursor: default;
+}
+
+.chip-recent button {
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0 4px 1px 12px;
+}
+
+.chip-recent button + button {
+  padding: 0 11px 1px 4px;
+  color: var(--ink-3);
+}
+
+/* ------------------------------------------------------------------ */
+/* Landing: other fires                                                 */
+/* ------------------------------------------------------------------ */
+
+.rooms-nook {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 26px;
+  padding-top: 18px;
+  position: relative;
+}
+
+/* a hand-drawn little divider instead of a line */
+.rooms-nook::before {
+  content: "· · ✦ · ·";
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--ink-4);
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  white-space: nowrap;
+}
+
+.code-form {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 38px;
+  padding: 0 4px 0 14px;
+  border-radius: 999px;
+  background: rgba(255, 220, 180, 0.06);
+  transition: background 0.25s var(--ease), box-shadow 0.25s var(--ease);
+}
+
+.code-form:focus-within {
+  background: rgba(255, 220, 180, 0.1);
+  box-shadow: 0 0 0 1.5px rgba(255, 196, 107, 0.35);
+}
+
+.code-form input {
+  width: 150px;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-hand);
+  font-size: 20px;
+}
+
+.code-form button {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 196, 107, 0.2);
+  color: var(--ink);
+  font-size: 16px;
+  cursor: pointer;
+  transition: transform 0.3s var(--spring), opacity 0.2s;
+}
+
+.code-form button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.code-form button:hover:not(:disabled) {
+  transform: translateX(2px) rotate(-8deg);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tossing things at people                                             */
+/* ------------------------------------------------------------------ */
+
+.toss-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(18, 10, 8, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.7) rotate(-20deg);
+  transition: opacity 0.2s var(--ease), transform 0.35s var(--spring);
+}
+
+.tile:hover .toss-btn,
+.toss-btn:focus-visible {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+}
+
+.toss-btn:hover {
+  transform: scale(1.15) rotate(-12deg) !important;
+}
+
+.toss-btn:active {
+  transform: scale(0.85) !important;
+}
+
+@media (pointer: coarse) {
+  .toss-btn {
+    opacity: 0.85;
+    transform: scale(0.9);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Spark cards                                                          */
+/* ------------------------------------------------------------------ */
+
+.spark-card {
+  width: min(440px, 100%);
+  padding: 12px 14px 12px 18px;
+  border-radius: 22px;
+  rotate: -1deg;
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--c) 16%, transparent), transparent 60%),
+    var(--glass-strong);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--c) 28%, transparent),
+    0 0 44px -14px color-mix(in srgb, var(--c) 70%, transparent),
+    0 18px 50px -24px rgba(0, 0, 0, 0.85);
+  animation: card-in 0.7s var(--spring) both;
+}
+
+.spark-msg {
+  margin: 4px 0;
+  padding: 9px 13px 11px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--c) 9%, rgba(255, 220, 180, 0.04));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 22%, transparent);
+  rotate: -0.6deg;
+}
+
+/* ------------------------------------------------------------------ */
+/* Shared screens                                                       */
+/* ------------------------------------------------------------------ */
+
+.screen-body {
+  background: #0b0605;
+  animation: tile-bloom 0.8s var(--spring) backwards;
+}
+
+.screen-body video {
+  object-fit: contain;
+}
+
+.screen-body:fullscreen {
+  border-radius: 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Keyframes                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -432,6 +677,11 @@ input:focus {
   0% { opacity: 0; transform: translate(0, 0) scale(0.4); }
   12% { opacity: 1; transform: translate(calc(var(--dx) * 0.15), -30px) scale(1.15); }
   100% { opacity: 0; transform: translate(var(--dx), -280px) scale(0.9) rotate(var(--rot)); }
+}
+
+@keyframes card-in {
+  0% { opacity: 0; transform: translateY(-18px) scale(0.9) rotate(3deg); filter: blur(6px) brightness(1.6); }
+  100% { opacity: 1; transform: none; filter: none; }
 }
 
 @keyframes sheet-up {

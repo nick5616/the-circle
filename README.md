@@ -1,6 +1,14 @@
 # The Circle
 
-One persistent global video room. Up to 8 participants on camera, unlimited audience in chat.
+A place to hang out on camera, around a fire. There's one big global room anyone can wander into, plus private rooms you reach with a code (`/r/cozy-moth-42`). Each room has 8 seats on camera and an unlimited audience in chat.
+
+## What you can do in a room
+
+- **Light your own fire**: the landing page makes a private room with a word code and sits you down in it. Invite people with the link (the room pill at the top copies it). Anyone can type a code to follow someone into theirs, and recent rooms are remembered.
+- **Share your screen**, tab audio included, so you can watch things together. The shared screen gets the spotlight and everyone else's camera moves to a strip beside it. If more than one person shares, you can switch between them. Keyboard: <kbd>s</kbd>.
+- **Fun tray** (✦ in the dock): reactions, plus *a question* (pulls a campfire question card that everyone sees), *roll* and *flip*.
+- **Toss things at people**: hover someone's tile and lob a 🍡 / 🌸 / 💌 / 🧦… at them. Everyone sees it fly and the tile wobble when it hits.
+- **Chat commands**: `/roll [N | XdN]`, `/flip`, `/me does a thing`, `/ask <question>` (the fire answers), `/spark` (question card). They're rolled server-side, so everyone sees the same result.
 
 ## Stack
 
@@ -147,11 +155,19 @@ node soak.mjs --participants 4 --audience 2 --mobile-audience --soak 60
 
 Every run writes a JSON report, screenshots, and the backend log to `e2e/artifacts/`.
 
+```bash
+# Rooms + hangout features (needs Redis, backend and dev server already running):
+# create room, follow a code, chat/spark isolation between rooms, /roll, tossing,
+# screen share video + tab audio (start, stop, restart), blip-resume, back/forward.
+node rooms.mjs --url http://127.0.0.1:5173
+```
+
 ## Deploying notes
 
 - **Cloud Run**: set the request timeout to the max (`--timeout=3600`), since websockets count as requests. Drops are survivable now, but each one still costs a reconnect.
 - **TURN**: set `TURN_URL` (comma-separated is fine, e.g. udp + tcp + `turns:` 443) plus `TURN_SECRET` or `TURN_USERNAME`/`TURN_CREDENTIAL`. Without TURN, people behind symmetric NATs (many mobile carriers, corporate wifi) can't connect at all. Check the HUD's `path` column: `relay` means TURN is in use.
-- **Mesh limits**: each participant uploads one stream per other participant *and* one per audience member. Bitrate adapts (`applyBitrate` in `rtc.ts`), but a large audience will eventually need an SFU (LiveKit, mediasoup).
+- **Netlify**: `netlify.toml` rewrites `/r/*` to `index.html` so room links work on a cold load.
+- **Mesh limits**: each participant uploads one stream per other participant *and* one per audience member. Screen share adds a second video stream per link while it's on (the camera's budget drops while you share). Bitrate adapts (`applyBitrate` in `rtc.ts`), but a large audience will eventually need an SFU (LiveKit, mediasoup).
 
 ## Troubleshooting
 

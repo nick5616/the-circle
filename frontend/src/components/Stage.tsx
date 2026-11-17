@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { PeerInfo, Seat } from "../types";
-import { circleLayout, gridLayout, type Rect } from "../layout";
+import type { PeerInfo, Seat, Throwable } from "../types";
+import { circleLayout, gridLayout, spotlightLayout, type Rect } from "../layout";
 import { scene } from "../scene";
 import { hashNameToColor } from "../fireColors";
 import Tile from "./Tile";
+import ScreenTile from "./ScreenTile";
+
+export interface Spotlight {
+  sid: string;
+  name: string;
+  stream?: MediaStream;
+  isLocal: boolean;
+  others: { sid: string; name: string }[];
+}
 
 interface Props {
   seats: Seat[]; // occupied seats in seat order
@@ -14,6 +23,10 @@ interface Props {
   localCam: boolean;
   localMic: boolean;
   insets: { top: number; right: number; bottom: number; left: number };
+  spotlight: Spotlight | null;
+  onPickScreen: (sid: string) => void;
+  onStopShare: () => void;
+  onToss?: (sid: string, item: Throwable) => void; // undefined → you can't throw things right now
 }
 
 const EXIT_MS = 520;
@@ -23,7 +36,9 @@ interface Rendered {
   leaving: boolean;
 }
 
-export default function Stage({ seats, myId, streams, peers, view, localCam, localMic, insets }: Props) {
+export default function Stage({
+  seats, myId, streams, peers, view, localCam, localMic, insets, spotlight, onPickScreen, onStopShare, onToss,
+}: Props) {
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
   // Seats that just left, kept briefly so they can animate out
   const [departed, setDeparted] = useState<Map<string, Seat>>(() => new Map());
@@ -86,10 +101,13 @@ export default function Stage({ seats, myId, streams, peers, view, localCam, loc
   const portrait = W / H < 0.85;
   const aspect = portrait ? (seats.length <= 2 ? 4 / 5 : 1) : 16 / 9;
 
+  const spot = !!spotlight;
   const layout = useMemo(
-    () => (view === "circle" ? circleLayout : gridLayout)(seats.length, W, H, aspect),
-    [view, seats.length, W, H, aspect]
+    () =>
+      spot ? spotlightLayout(seats.length, W, H, aspect) : (view === "circle" ? circleLayout : gridLayout)(seats.length, W, H, aspect),
+    [spot, view, seats.length, W, H, aspect]
   );
+  const screenRect = "screen" in layout ? (layout.screen as Rect) : null;
 
   const rectFor = (sid: string, leaving: boolean): Rect => {
     if (leaving) return lastRects.current.get(sid) ?? { x: insets.left + W / 2, y: insets.top + H / 2, w: 0, h: 0 };
@@ -131,6 +149,19 @@ export default function Stage({ seats, myId, streams, peers, view, localCam, loc
         </p>
       )}
       <div style={{ pointerEvents: "auto" }}>
+        {spotlight && screenRect && (
+          <ScreenTile
+            key={`screen-${spotlight.sid}`}
+            sid={spotlight.sid}
+            name={spotlight.name}
+            stream={spotlight.stream}
+            isLocal={spotlight.isLocal}
+            others={spotlight.others}
+            rect={{ x: screenRect.x + insets.left, y: screenRect.y + insets.top, w: screenRect.w, h: screenRect.h }}
+            onPick={onPickScreen}
+            onStop={onStopShare}
+          />
+        )}
         {rendered.map(({ seat, leaving }) => {
           const sid = seat.session_id;
           const isLocal = sid === myId;
@@ -146,6 +177,7 @@ export default function Stage({ seats, myId, streams, peers, view, localCam, loc
               micOn={isLocal ? localMic : seat.mic}
               peer={peers.get(sid)}
               register={register}
+              onToss={!isLocal && !leaving ? onToss : undefined}
             />
           );
         })}

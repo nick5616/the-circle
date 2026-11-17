@@ -4,10 +4,11 @@ import { rtc } from "./rtc";
 import { audioLevels } from "./audio";
 import { telemetry } from "./telemetry";
 import { flare, scene } from "./scene";
-import type { FeedItem, PeerInfo, Reaction, Role, RoomSnapshot, Seat, ServerMessage, WsStatus } from "./types";
+import type { FeedItem, PeerInfo, Reaction, Role, RoomSnapshot, Seat, ServerMessage, Throwable, WsStatus } from "./types";
+import { MAIN, newRoomCode, rememberRoom, roomFromUrl, roomPath } from "./rooms";
 import FireCanvas from "./components/FireCanvas";
 import Landing from "./components/Landing";
-import Stage from "./components/Stage";
+import Stage, { type Spotlight } from "./components/Stage";
 import Dock from "./components/Dock";
 import Chat, { CHAT_WIDTH } from "./components/Chat";
 import SeatBar from "./components/SeatBar";
@@ -15,6 +16,8 @@ import AudioSink from "./components/AudioSink";
 import Reactions, { type FloatingReaction } from "./components/Reactions";
 import Notice from "./components/Notice";
 import DebugHud from "./components/DebugHud";
+import SparkCard from "./components/SparkCard";
+import Tosses, { TOSS_FLIGHT_MS, type FlyingToss } from "./components/Tosses";
 
 const EMPTY_SEATS: Array<Seat | null> = Array(8).fill(null);
 
@@ -35,6 +38,28 @@ const VIDEO: MediaTrackConstraints = {
   frameRate: { ideal: 24, max: 30 },
 };
 const AUDIO: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+const SPARK_FRESH_MS = 30 * 60_000; // an old question card isn't news to someone walking in
+const canShareScreen = typeof navigator !== "undefined" && !!navigator.mediaDevices?.getDisplayMedia;
+
+function urlFor(rid: string): string {
+  const q = new URLSearchParams(location.search);
+  q.delete("room");
+  const qs = q.toString();
+  return roomPath(rid) + (qs ? `?${qs}` : "");
+}
+
+function bonk(el: HTMLElement | null | undefined) {
+  el?.querySelector(".tile-body")?.animate(
+    [
+      { transform: "none" },
+      { transform: "rotate(-4deg) scale(0.95)" },
+      { transform: "rotate(3deg) scale(1.02)" },
+      { transform: "rotate(-1.5deg)" },
+      { transform: "none" },
+    ],
+    { duration: 520, easing: "ease-out" }
+  );
+}
 
 // Camera + mic, degrading gracefully: both → voice only → camera only → none
 async function acquireMedia(): Promise<{ stream: MediaStream | null; error?: string }> {
@@ -63,6 +88,7 @@ export default function App() {
   const debug = useMemo(() => new URLSearchParams(location.search).has("debug"), []);
 
   const [phase, setPhase] = useState<"landing" | "room">("landing");
+  const [roomId, setRoomId] = useState(() => socket.room);
   const [room, setRoom] = useState<RoomSnapshot | null>(null);
   const [me, setMe] = useState<{ sid: string; role: Role | null; name: string }>({ sid: "", role: null, name: "" });
   const [ws, setWs] = useState<WsStatus>(socket.status);
@@ -70,6 +96,11 @@ export default function App() {
   const [streams, setStreams] = useState<Map<string, MediaStream>>(() => new Map());
   const [peers, setPeers] = useState<Map<string, PeerInfo>>(() => new Map());
   const [local, setLocal] = useState<MediaStream | null>(null);
+  const [screens, setScreens] = useState<Map<string, MediaStream>>(() => new Map()); // remote screen shares
+  const [myScreen, setMyScreen] = useState<MediaStream | null>(null);
+  const [pinnedScreen, setPinnedScreen] = useState<string | null>(null);
+  const [sparkDismissed, setSparkDismissed] = useState<string | null>(null);
+  const [tosses, setTosses] = useState<FlyingToss[]>([]);
   const [mic, setMic] = useState(true);
   const [cam, setCam] = useState(true);
   const [view, setView] = useState<"grid" | "circle">(() => (window.innerWidth < 760 ? "grid" : "circle"));
@@ -85,7 +116,12 @@ export default function App() {
   meRef.current = me;
   const roomRef = useRef<RoomSnapshot | null>(null);
   const localRef = useRef<MediaStream | null>(null);
-  const mediaRef = useRef({ mic: true, cam: true });
+  const mediaRef = useRef({ mic: true, cam: true, screen: false });
+  const screenRef = useRef<MediaStream | null>(null);
+  // A join to send as soon as the next room's socket says hello (creating a room sits you right down)
+  const pendingJoinRef = useRef<{ name: string; role: Role } | null>(null);
+  const handleJoinRef = useRef<(name: string, role: Role) => void>(() => {});
+  const stopShareRef = useRef<() => void>(() => {});
   // What we want to be, so a lost session can be silently re-joined
   const intentRef = useRef<{ name: string; role: Role } | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -111,7 +147,7 @@ export default function App() {
     localRef.current = stream;
     rtc.setLocalStream(stream);
     setLocal(stream);
-    const m = { mic: !!stream?.getAudioTracks().length, cam: !!stream?.getVideoTracks().length };
+    const m = { mic: !!stream?.getAudioTracks().length, cam: !!stream?.getVideoTracks().length, screen: !!screenRef.current };
     mediaRef.current = m;
     setMic(m.mic);
     setCam(m.cam);
@@ -123,17 +159,15 @@ export default function App() {
 
   // ── Wiring ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    rtc.setCallbacks(
-      (sid, stream) =>
-        setStreams((prev) => {
-          if (stream ? prev.get(sid) === stream : !prev.has(sid)) return prev;
-          const next = new Map(prev);
-          if (stream) next.set(sid, stream);
-          else next.delete(sid);
-          return next;
-        }),
-      setPeers
-    );
+    const into = (set: typeof setStreams) => (sid: string, stream: MediaStream | null) =>
+      set((prev) => {
+        if (stream ? prev.get(sid) === stream : !prev.has(sid)) return prev;
+        const next = new Map(prev);
+        if (stream) next.set(sid, stream);
+        else next.delete(sid);
+        return next;
+      });
+    rtc.setCallbacks(into(setStreams), setPeers, into(setScreens));
     telemetry.setSender((payload) => socket.send({ type: "telemetry", payload }));
     telemetry.setSummary(() => rtc.summary());
     const offStatus = socket.onStatus(setWs);
@@ -168,9 +202,14 @@ export default function App() {
         meRef.current = { ...meRef.current, sid: p.session_id };
         if (p.resumed) {
           rtc.signalingRestored();
+        } else if (pendingJoinRef.current) {
+          const j = pendingJoinRef.current;
+          pendingJoinRef.current = null;
+          handleJoinRef.current(j.name, j.role);
         } else if (intentRef.current) {
           // The server forgot us (grace period ran out, or Redis was wiped). Quietly sit back down.
           telemetry.event("rejoin", { role: intentRef.current.role });
+          stopShareRef.current();
           rtc.reset();
           const role = intentRef.current.role === "participant" && localRef.current ? "participant" : "audience";
           meRef.current = { ...meRef.current, role: null };
@@ -184,6 +223,8 @@ export default function App() {
         meRef.current = { ...meRef.current, role, name };
         setMe((m) => ({ ...m, role, name }));
         intentRef.current = { name, role };
+        rememberRoom(socket.room);
+        if (role === "audience") stopShareRef.current();
         if (role === "audience" && localRef.current) applyLocal(null);
         rtc.configure(meRef.current.sid, role, seatedIds(roomRef.current));
         if (role === "participant") {
@@ -197,6 +238,7 @@ export default function App() {
       case "room_state": {
         const prev = roomRef.current;
         roomRef.current = msg.payload;
+        if (prev?.spark?.id !== msg.payload.spark?.id && msg.payload.spark) flare(0.7);
         setRoom(msg.payload);
         const { sid, role } = meRef.current;
         if (role) rtc.configure(sid, role, seatedIds(msg.payload));
@@ -218,6 +260,9 @@ export default function App() {
         break;
       case "reaction":
         spawnReaction(msg.payload.session_id, msg.payload.emoji);
+        break;
+      case "toss":
+        spawnToss(msg.payload.from, msg.payload.to, msg.payload.item, msg.payload.name);
         break;
       case "seat_denied":
         say("all 8 seats are taken, so you're watching for now");
@@ -269,6 +314,27 @@ export default function App() {
     setTimeout(() => setReactions((rs) => rs.filter((x) => x.id !== r.id)), 2700);
   }
 
+  function spawnToss(fromSid: string, toSid: string, item: string, name: string) {
+    const toEl = scene.people.find((p) => p.sid === toSid)?.el;
+    const target = roomRef.current?.seats.find((s) => s?.session_id === toSid);
+    if (!toEl || !target) return;
+    const fromEl = scene.people.find((p) => p.sid === fromSid)?.el;
+    const tb = toEl.getBoundingClientRect();
+    const fb = fromEl?.getBoundingClientRect();
+    const from = fb
+      ? { x: fb.left + fb.width / 2, y: fb.top + fb.height * 0.4 }
+      : { x: window.innerWidth * (0.3 + Math.random() * 0.4), y: window.innerHeight + 30 }; // audience throws from the dark
+    const to = { x: tb.left + tb.width * (0.35 + Math.random() * 0.3), y: tb.top + tb.height * (0.3 + Math.random() * 0.3) };
+    const t: FlyingToss = { id: ++reactionId.current, item, from, to };
+    setTosses((ts) => [...ts.slice(-20), t]);
+    setTimeout(() => bonk(toEl), TOSS_FLIGHT_MS);
+    const ts = new Date().toISOString();
+    const who = toSid === meRef.current.sid ? "you" : target.name;
+    mergeFeed([{ kind: "event", id: `toss-${t.id}`, name, text: `tossed a ${item} at ${who}`, timestamp: ts }]);
+  }
+
+  const tossDone = useCallback((id: number) => setTosses((ts) => ts.filter((t) => t.id !== id)), []);
+
   // ── Actions ─────────────────────────────────────────────────────────────
   const handleJoin = useCallback(async (name: string, role: Role) => {
     setJoining(true);
@@ -285,6 +351,7 @@ export default function App() {
     intentRef.current = { name, role: finalRole };
     socket.send({ type: "join", payload: { name, role: finalRole } });
   }, [say, applyLocal]);
+  handleJoinRef.current = handleJoin;
 
   const toggleMic = useCallback(() => {
     const track = localRef.current?.getAudioTracks()[0];
@@ -306,7 +373,7 @@ export default function App() {
       localRef.current = next;
       rtc.setLocalStream(next);
       setLocal(next);
-      await rtc.setLocalTrack("video", null);
+      await rtc.setLocalTrack("cam", null);
       mediaRef.current = { ...mediaRef.current, cam: false };
       setCam(false);
     } else {
@@ -317,7 +384,7 @@ export default function App() {
         localRef.current = next;
         rtc.setLocalStream(next);
         setLocal(next);
-        await rtc.setLocalTrack("video", track);
+        await rtc.setLocalTrack("cam", track);
         mediaRef.current = { ...mediaRef.current, cam: true };
         setCam(true);
       } catch {
@@ -339,14 +406,72 @@ export default function App() {
     socket.send({ type: "take_seat" });
   }, [say, applyLocal]);
 
+  // Screen share rides in its own pre-negotiated slots, so starting/stopping is just a track swap
+  const stopShare = useCallback(() => {
+    const s = screenRef.current;
+    if (!s) return;
+    screenRef.current = null;
+    s.getTracks().forEach((t) => {
+      t.onended = null;
+      t.stop();
+    });
+    setMyScreen(null);
+    rtc.setLocalTrack("screen", null);
+    rtc.setLocalTrack("screenAudio", null);
+    mediaRef.current = { ...mediaRef.current, screen: false };
+    sendMedia();
+  }, [sendMedia]);
+  stopShareRef.current = stopShare;
+
+  const toggleShare = useCallback(async () => {
+    if (screenRef.current) {
+      stopShare();
+      return;
+    }
+    if (meRef.current.role !== "participant" || !canShareScreen) return;
+    let s: MediaStream;
+    try {
+      s = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 30, max: 30 }, width: { max: 1920 }, height: { max: 1080 } },
+        audio: true, // tab audio, so you can watch things together
+        // Chrome hints: offer system audio, don't offer this very tab (hall of mirrors)
+        systemAudio: "include",
+        selfBrowserSurface: "exclude",
+        surfaceSwitching: "include",
+      } as DisplayMediaStreamOptions);
+    } catch (err) {
+      if ((err as DOMException)?.name !== "NotAllowedError") say("couldn't share your screen just now");
+      return;
+    }
+    if (meRef.current.role !== "participant") {
+      s.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    const video = s.getVideoTracks()[0];
+    const audio = s.getAudioTracks()[0] ?? null;
+    screenRef.current = s;
+    setMyScreen(s);
+    setPinnedScreen(null);
+    video.onended = () => stopShare(); // the browser's own "stop sharing" bar
+    await rtc.setLocalTrack("screen", video);
+    await rtc.setLocalTrack("screenAudio", audio);
+    mediaRef.current = { ...mediaRef.current, screen: true };
+    sendMedia();
+    flare(0.5);
+    telemetry.event("screen_share", { audio: !!audio });
+  }, [say, sendMedia, stopShare]);
+
   const leaveSeat = useCallback(() => {
+    stopShare();
     applyLocal(null);
     socket.send({ type: "leave_seat" });
-  }, [applyLocal]);
+  }, [applyLocal, stopShare]);
 
-  const leaveRoom = useCallback(() => {
+  // Tear down everything about the current room and open a fresh session in `nextRoom` (or the same one)
+  const resetRoom = useCallback((nextRoom?: string) => {
     intentRef.current = null;
-    socket.leave();
+    stopShare();
+    socket.leave(nextRoom);
     rtc.reset();
     applyLocal(null);
     meRef.current = { sid: "", role: null, name: "" };
@@ -355,13 +480,49 @@ export default function App() {
     setRoom(null);
     setFeed([]);
     setStreams(new Map());
+    setScreens(new Map());
     setPeers(new Map());
+    setTosses([]);
+    setPinnedScreen(null);
     setUnread(0);
     setPhase("landing");
-  }, [applyLocal]);
+  }, [applyLocal, stopShare]);
+
+  const leaveRoom = useCallback(() => resetRoom(), [resetRoom]);
+
+  const goToRoom = useCallback((rid: string, opts: { join?: { name: string; role: Role }; push?: boolean } = {}) => {
+    pendingJoinRef.current = opts.join ?? null;
+    resetRoom(rid);
+    setJoining(!!opts.join);
+    setRoomId(rid);
+    if (opts.push !== false && location.pathname + location.search !== urlFor(rid)) history.pushState(null, "", urlFor(rid));
+  }, [resetRoom]);
+
+  const createRoom = useCallback((name: string) => {
+    goToRoom(newRoomCode(), { join: { name, role: "participant" } });
+  }, [goToRoom]);
+
+  // Back/forward between rooms
+  useEffect(() => {
+    const onPop = () => {
+      const rid = roomFromUrl();
+      if (rid !== socket.room) goToRoom(rid, { push: false });
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [goToRoom]);
+
+  useEffect(() => {
+    document.title = roomId === MAIN ? "the circle" : `${roomId} · the circle`;
+  }, [roomId]);
 
   const react = useCallback((emoji: Reaction) => socket.send({ type: "react", payload: { emoji } }), []);
   const sendChat = useCallback((content: string) => socket.send({ type: "chat", payload: { content } }), []);
+  const toss = useCallback((target: string, item: Throwable) => socket.send({ type: "toss", payload: { target, item } }), []);
+  const drawSpark = useCallback(() => {
+    setSparkDismissed(null);
+    socket.send({ type: "spark" });
+  }, []);
 
   const onAudioBlocked = useCallback(() => {
     setAudioBlocked((was) => {
@@ -395,11 +556,12 @@ export default function App() {
       if (phase !== "room") return;
       if (e.key === "m") toggleMic();
       else if (e.key === "v") toggleCam();
+      else if (e.key === "s" && meRef.current.role === "participant") toggleShare();
       else if (e.key === "c") setChatOpen((o) => !o);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [phase, toggleMic, toggleCam]);
+  }, [phase, toggleMic, toggleCam, toggleShare]);
 
   useEffect(() => {
     if (chatOpen) setUnread(0);
@@ -430,6 +592,25 @@ export default function App() {
 
   useEffect(() => audioLevels.sync(allStreams), [allStreams]);
 
+  // Whose screen is up: the one you picked, else the newest share
+  const spotlight = useMemo<Spotlight | null>(() => {
+    const sharers = occupied
+      .filter((s) => s.screen)
+      .sort((a, b) => (b.screen_at ?? "").localeCompare(a.screen_at ?? ""));
+    const focus = sharers.find((s) => s.session_id === pinnedScreen) ?? sharers[0];
+    if (!focus) return null;
+    const isLocal = focus.session_id === me.sid;
+    return {
+      sid: focus.session_id,
+      name: focus.name,
+      isLocal,
+      stream: isLocal ? myScreen ?? undefined : screens.get(focus.session_id),
+      others: sharers.filter((s) => s !== focus).map((s) => ({ sid: s.session_id, name: s.name })),
+    };
+  }, [occupied, pinnedScreen, me.sid, myScreen, screens]);
+
+  const spark = room?.spark && room.spark.id !== sparkDismissed && Date.now() - Date.parse(room.spark.at) < SPARK_FRESH_MS ? room.spark : null;
+
   const insets = useMemo(() => {
     if (mobile) return { top: 60, right: 10, bottom: 96, left: 10 };
     return { top: 64, right: chatOpen ? CHAT_WIDTH + 36 : 24, bottom: 100, left: 24 };
@@ -438,7 +619,7 @@ export default function App() {
   return (
     <>
       <FireCanvas />
-      <AudioSink streams={streams} myId={me.sid} onBlocked={onAudioBlocked} />
+      <AudioSink streams={streams} screens={screens} myId={me.sid} onBlocked={onAudioBlocked} />
 
       {phase === "landing" || !room || !me.role ? (
         <Landing
@@ -446,11 +627,14 @@ export default function App() {
           audienceCount={room?.audience_count ?? 0}
           connected={ws === "open"}
           joining={joining}
+          room={roomId}
           onJoin={handleJoin}
+          onCreateRoom={createRoom}
+          onGoRoom={(rid) => goToRoom(rid)}
         />
       ) : (
         <div style={{ animation: "curtain 0.9s var(--ease) both" }}>
-          <SeatBar seats={seats} audienceCount={room.audience_count} ws={ws} />
+          <SeatBar seats={seats} audienceCount={room.audience_count} ws={ws} room={roomId} />
           <Stage
             seats={occupied}
             myId={me.sid}
@@ -460,7 +644,14 @@ export default function App() {
             localCam={cam}
             localMic={mic}
             insets={insets}
+            spotlight={spotlight}
+            onPickScreen={setPinnedScreen}
+            onStopShare={stopShare}
+            onToss={toss}
           />
+          {spark && (
+            <SparkCard spark={spark} canDraw quiet={!!spotlight} onAnother={drawSpark} onDismiss={() => setSparkDismissed(spark.id)} />
+          )}
           <Chat
             items={feed}
             myId={me.sid}
@@ -476,6 +667,8 @@ export default function App() {
             mic={mic}
             cam={cam}
             hasMic={!!local?.getAudioTracks().length}
+            canShare={canShareScreen && !mobile}
+            sharing={!!myScreen}
             seatsAvailable={occupied.length < 8}
             chatOpen={chatOpen}
             unread={unread}
@@ -484,6 +677,9 @@ export default function App() {
             onToggleMic={toggleMic}
             onToggleCam={toggleCam}
             onReact={react}
+            onToggleShare={toggleShare}
+            onSpark={drawSpark}
+            onChatCommand={sendChat}
             onToggleChat={() => setChatOpen((o) => !o)}
             onToggleView={() => setView((v) => (v === "grid" ? "circle" : "grid"))}
             onTakeSeat={takeSeat}
@@ -491,6 +687,7 @@ export default function App() {
             onLeaveRoom={leaveRoom}
           />
           <Reactions items={reactions} />
+          <Tosses items={tosses} onDone={tossDone} />
         </div>
       )}
 

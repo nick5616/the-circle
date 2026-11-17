@@ -3,18 +3,23 @@ import type { CSSProperties } from "react";
 import type { Role, Seat } from "../types";
 import { hashNameToColor, type FireColor } from "../fireColors";
 import { flare, scene } from "../scene";
+import { MAIN, cleanRoom, forgetRoom, recentRooms } from "../rooms";
+import { shareInvite } from "./SeatBar";
 
 interface Props {
   seats: Array<Seat | null>;
   audienceCount: number;
   connected: boolean;
   joining: boolean;
+  room: string;
   onJoin: (name: string, role: Role) => void;
+  onCreateRoom: (name: string) => void;
+  onGoRoom: (room: string) => void;
 }
 
 const MAX_SEATS = 8;
 
-export default function Landing({ seats, audienceCount, connected, joining, onJoin }: Props) {
+export default function Landing({ seats, audienceCount, connected, joining, room, onJoin, onCreateRoom, onGoRoom }: Props) {
   const [name, setName] = useState(() => {
     try {
       return localStorage.getItem("circle:name") ?? "";
@@ -23,9 +28,14 @@ export default function Landing({ seats, audienceCount, connected, joining, onJo
     }
   });
   const [color, setColor] = useState<FireColor | null>(null);
+  const [code, setCode] = useState("");
+  const [recent, setRecent] = useState(() => recentRooms());
+  const [copied, setCopied] = useState(false);
+  const priv = room !== MAIN;
   const ring = useRef<HTMLDivElement>(null);
   const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight });
-  const R = Math.max(96, Math.min(160, Math.min(vp.w, vp.h) * 0.2));
+  // The ring gives way on short screens so the whole column fits without scrolling
+  const R = Math.max(vp.h < 820 ? 80 : 96, Math.min(160, Math.min(vp.w, vp.h) * 0.2, (vp.h - (room !== MAIN ? 650 : 600)) / 2));
 
   const trimmed = name.trim();
   const taken = seats.filter(Boolean).length;
@@ -68,13 +78,34 @@ export default function Landing({ seats, audienceCount, connected, joining, onJo
 
   useEffect(() => () => void (scene.people = []), []);
 
-  function join(role: Role) {
-    if (!trimmed || joining || !connected) return;
+  useEffect(() => setRecent(recentRooms()), [room]);
+
+  function saveName() {
     try {
       localStorage.setItem("circle:name", trimmed);
     } catch {}
+  }
+
+  function join(role: Role) {
+    if (!trimmed || joining || !connected) return;
+    saveName();
     flare(1.2);
     onJoin(trimmed, role);
+  }
+
+  function create() {
+    if (!trimmed || joining) return;
+    saveName();
+    flare(1.4);
+    onCreateRoom(trimmed);
+  }
+
+  function goCode() {
+    const rid = cleanRoom(code);
+    if (!code.trim() || rid === room) return;
+    setCode("");
+    flare(0.6);
+    onGoRoom(rid);
   }
 
   const c = color?.hex ?? "#ffb36b";
@@ -84,13 +115,14 @@ export default function Landing({ seats, audienceCount, connected, joining, onJo
     <div
       style={{
         position: "fixed", inset: 0, zIndex: 2, overflowY: "auto", overflowX: "hidden",
-        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start",
         padding: "calc(20px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom))",
         animation: "curtain 1.2s var(--ease) both",
       }}
     >
       {/* Wordmark — the dot on the i is a little flame */}
-      <div style={{ position: "relative", textAlign: "center" }}>
+      {/* auto margins top + bottom center the column but, unlike justify-content, never clip it */}
+      <div style={{ position: "relative", textAlign: "center", marginTop: "auto" }}>
         <Sparkle style={{ left: -26, top: 8 }} delay={0} />
         <Sparkle style={{ right: -18, top: -4 }} delay={0.9} size={10} />
         <Sparkle style={{ right: -34, bottom: 6 }} delay={1.7} size={7} />
@@ -108,9 +140,32 @@ export default function Landing({ seats, audienceCount, connected, joining, onJo
           </span>
           rcle
         </h1>
-        <p className="hand" style={{ margin: "6px 0 0", fontSize: "clamp(20px, 4.4vw, 25px)", color: "var(--ink-2)", transform: "rotate(-1.5deg)" }}>
-          one room, open to anyone. 8 seats on camera.
-        </p>
+        {priv ? (
+          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+            <span className="hand" style={{ fontSize: "clamp(19px, 4.2vw, 23px)", color: "var(--ink-2)", transform: "rotate(-1.5deg)" }}>
+              a private little fire called
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+              <span className="display" data-testid="landing-room" style={{ fontSize: "clamp(22px, 5vw, 30px)", fontStyle: "italic", color: "var(--gold)", textShadow: "0 0 24px rgba(255,180,90,0.45)" }}>
+                {room}
+              </span>
+              <button
+                className="chip"
+                onClick={async () => {
+                  const r = await shareInvite(room);
+                  setCopied(r !== "failed");
+                  setTimeout(() => setCopied(false), 2000);
+                }}
+              >
+                {copied ? "copied ✓" : "copy invite"}
+              </button>
+            </span>
+          </div>
+        ) : (
+          <p className="hand" style={{ margin: "6px 0 0", fontSize: "clamp(20px, 4.4vw, 25px)", color: "var(--ink-2)", transform: "rotate(-1.5deg)" }}>
+            one big fire, open to anyone. 8 seats on camera.
+          </p>
+        )}
       </div>
 
       {/* The ring of eight seats around the fire */}
@@ -161,7 +216,7 @@ export default function Landing({ seats, audienceCount, connected, joining, onJo
         {!connected
           ? "connecting"
           : taken === 0 && audienceCount === 0
-          ? "nobody's here yet"
+          ? priv ? "nobody's here yet. you could be first" : "nobody's here yet"
           : [taken > 0 && `${taken} on camera`, audienceCount > 0 && `${audienceCount} watching`].filter(Boolean).join(", ")}
       </p>
 
@@ -240,7 +295,66 @@ export default function Landing({ seats, audienceCount, connected, joining, onJo
         </button>
       </div>
 
-      <p className="hand" style={{ margin: "22px 0 0", textAlign: "center", fontSize: 17, color: "var(--ink-4)", pointerEvents: "none" }}>
+      {/* Other fires: start your own, or follow a code to a friend's */}
+      <div className="rooms-nook" data-testid="rooms-nook">
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", alignItems: "center", gap: 10 }}>
+        <button
+          className="chip chip-big"
+          data-testid="create-room"
+          disabled={!trimmed || joining}
+          onClick={create}
+          title={trimmed ? "make a private room and invite people with a link" : "type your name first"}
+        >
+          🔥 {priv ? "light another fire" : "light your own fire"}
+        </button>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            goCode();
+          }}
+          className="code-form"
+        >
+          <input
+            data-testid="room-code-input"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            maxLength={40}
+            placeholder="got a code?"
+            autoComplete="off"
+            spellCheck={false}
+            aria-label="room code"
+          />
+          <button type="submit" data-testid="room-code-go" disabled={!code.trim()} aria-label="go to that room">
+            →
+          </button>
+        </form>
+        </div>
+        {(priv || recent.some((r) => r !== room)) && (
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 6, maxWidth: 360 }}>
+            {priv && (
+              <button className="chip" data-testid="go-main" onClick={() => onGoRoom(MAIN)}>
+                ← the big circle
+              </button>
+            )}
+            {recent.filter((r) => r !== room).map((r) => (
+              <span key={r} className="chip chip-recent">
+                <button onClick={() => onGoRoom(r)} title={`back to ${r}`}>{r}</button>
+                <button
+                  aria-label={`forget ${r}`}
+                  onClick={() => {
+                    forgetRoom(r);
+                    setRecent(recentRooms());
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <p className="hand" style={{ margin: "22px 0 auto", textAlign: "center", fontSize: 17, color: "var(--ink-4)", pointerEvents: "none" }}>
         made by nicole
       </p>
     </div>

@@ -14,10 +14,11 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.layers import get_channel_layer
 from django.conf import settings
 
+from . import fun
 from . import room_state as rs
 from .ice import get_ice_servers
 
-GROUP_NAME = "global_room"
+MAIN = rs.MAIN
 
 # How long a seat is held for a socket that dropped without saying goodbye.
 # Covers wifi blips, phone lock screens, Cloud Run request timeouts and deploys:
@@ -39,6 +40,11 @@ def _now() -> str:
 
 def _redis():
     return aioredis.from_url(settings.CHANNEL_LAYERS["default"]["CONFIG"]["hosts"][0])
+
+
+def group_for(rid: str) -> str:
+    # The main room keeps its original group name so a rolling deploy can't split it
+    return "global_room" if rid == MAIN else f"room.{rid}"
 
 
 def _clean_name(raw) -> str:
@@ -65,26 +71,26 @@ class Bucket:
         return False
 
 
-async def _broadcast_room(redis, layer) -> None:
-    await layer.group_send(GROUP_NAME, {"type": "room.state", "payload": await rs.room_payload(redis)})
+async def _broadcast_room(redis, layer, rid: str) -> None:
+    await layer.group_send(group_for(rid), {"type": "room.state", "payload": await rs.room_payload(redis, rid)})
 
 
-async def _finalize_leave(redis, layer, sid: str) -> None:
-    await rs.vacate_seat(redis, sid)
-    await rs.remove_audience(redis, sid)
+async def _finalize_leave(redis, layer, sid: str, rid: str) -> None:
+    await rs.vacate_seat(redis, rid, sid)
+    await rs.remove_audience(redis, rid, sid)
     await rs.delete_session(redis, sid)
-    await _broadcast_room(redis, layer)
-    await layer.group_send(GROUP_NAME, {"type": "peer.gone", "sid": sid})
+    await _broadcast_room(redis, layer, rid)
+    await layer.group_send(group_for(rid), {"type": "peer.gone", "sid": sid})
 
 
-async def _expire_after_grace(sid: str, gen: int) -> None:
+async def _expire_after_grace(sid: str, gen: int, rid: str) -> None:
     await asyncio.sleep(GRACE_SECONDS)
     redis = _redis()
     try:
         sess = await rs.get_session(redis, sid)
         if sess and not sess.get("channel") and int(sess.get("gen") or 0) == gen:
-            log.info("grace expired sid=%s name=%s", sid[:8], sess.get("name"))
-            await _finalize_leave(redis, get_channel_layer(), sid)
+            log.info("grace expired sid=%s name=%s room=%s", sid[:8], sess.get("name"), rid)
+            await _finalize_leave(redis, get_channel_layer(), sid, rid)
     except Exception:
         log.exception("grace expiry failed sid=%s", sid[:8])
     finally:
@@ -93,12 +99,14 @@ async def _expire_after_grace(sid: str, gen: int) -> None:
 
 class RoomConsumer(AsyncWebsocketConsumer):
     """
-    All websocket traffic for the single global room.
+    All websocket traffic for one room. The room is picked at connect time with
+    ?room=<code>; missing or empty means the global "main" room. Switching
+    rooms means opening a new socket (and a new session).
 
-    Client → Server: join, chat, signal, media, react, take_seat, leave_seat,
-                     ping, bye, telemetry
+    Client → Server: join, chat, signal, media, react, toss, spark, take_seat,
+                     leave_seat, ping, bye, telemetry
     Server → Client: hello, joined, room_state, chat, chat_history, signal,
-                     peer_gone, reaction, seat_denied, pong
+                     peer_gone, reaction, toss, seat_denied, pong
     """
 
     # ------------------------------------------------------------------
@@ -114,13 +122,18 @@ class RoomConsumer(AsyncWebsocketConsumer):
         self.signal_bucket = Bucket(400, 120)
         self.chat_bucket = Bucket(8, 1)
         self.react_bucket = Bucket(12, 4)
+        self.toss_bucket = Bucket(6, 1)
+        self.spark_bucket = Bucket(3, 0.2)
         self.telemetry_bucket = Bucket(10, 0.5)
         self.last_reap = 0.0
 
-        await self.channel_layer.group_add(GROUP_NAME, self.channel_name)
+        qs = parse_qs(self.scope.get("query_string", b"").decode())
+        self.rid = rs.clean_room((qs.get("room") or [""])[0])
+        self.group = group_for(self.rid)
+
+        await self.channel_layer.group_add(self.group, self.channel_name)
         await self.accept()
 
-        qs = parse_qs(self.scope.get("query_string", b"").decode())
         resume_sid = (qs.get("sid") or [""])[0]
         resume_token = (qs.get("token") or [""])[0]
         resumed = await self._try_resume(resume_sid, resume_token)
@@ -128,7 +141,7 @@ class RoomConsumer(AsyncWebsocketConsumer):
         if not resumed:
             self.sid = str(uuid.uuid4())
             self.token = secrets.token_urlsafe(24)
-            await rs.create_session(self.redis, self.sid, self.token, self.channel_name)
+            await rs.create_session(self.redis, self.sid, self.token, self.channel_name, self.rid)
 
         await self._send({
             "type": "hello",
@@ -138,14 +151,15 @@ class RoomConsumer(AsyncWebsocketConsumer):
                 "resumed": resumed,
                 "role": self.role,
                 "name": self.name,
+                "room": self.rid,
                 "ice_servers": get_ice_servers(),
                 "grace_seconds": GRACE_SECONDS,
             },
         })
         await self._send_room_state_to_self()
         if resumed and self.role:
-            await self._send({"type": "chat_history", "payload": {"messages": await rs.get_chat_history(self.redis)}})
-            await _broadcast_room(self.redis, self.channel_layer)
+            await self._send({"type": "chat_history", "payload": {"messages": await rs.get_chat_history(self.redis, self.rid)}})
+            await _broadcast_room(self.redis, self.channel_layer, self.rid)
 
     async def _try_resume(self, sid: str, token: str) -> bool:
         if not sid or not token:
@@ -153,6 +167,8 @@ class RoomConsumer(AsyncWebsocketConsumer):
         sess = await rs.get_session(self.redis, sid)
         if not sess or not hmac.compare_digest(sess.get("token", ""), token):
             return False
+        if sess["room"] != self.rid:
+            return False  # a session lives in exactly one room
 
         self.sid, self.token = sid, token
         self.name = sess.get("name", "")
@@ -165,20 +181,20 @@ class RoomConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.send(old_channel, {"type": "session.takeover"})
 
         if self.role == "participant":
-            if not await rs.update_seat(self.redis, sid, away=False):
+            if not await rs.update_seat(self.redis, self.rid, sid, away=False):
                 # Seat was reaped while we were gone — try to get one back
-                if not await rs.claim_seat(self.redis, sid, self.name):
+                if not await rs.claim_seat(self.redis, self.rid, sid, self.name):
                     self.role = "audience"
-                    await rs.add_audience(self.redis, sid, self.name)
+                    await rs.add_audience(self.redis, self.rid, sid, self.name)
                     await rs.update_session(self.redis, sid, role="audience")
         elif self.role == "audience":
-            await rs.add_audience(self.redis, sid, self.name)
+            await rs.add_audience(self.redis, self.rid, sid, self.name)
 
-        log.info("resumed sid=%s name=%s role=%s", sid[:8], self.name, self.role)
+        log.info("resumed sid=%s name=%s role=%s room=%s", sid[:8], self.name, self.role, self.rid)
         return True
 
     async def disconnect(self, close_code):
-        await self.channel_layer.group_discard(GROUP_NAME, self.channel_name)
+        await self.channel_layer.group_discard(self.group, self.channel_name)
         try:
             if self.sid is None or self.closing_reason == "takeover":
                 return
@@ -189,16 +205,19 @@ class RoomConsumer(AsyncWebsocketConsumer):
             if not self.role:
                 await rs.delete_session(self.redis, self.sid)  # lobby-only visitor
             elif self.closing_reason == "bye":
-                await _finalize_leave(self.redis, self.channel_layer, self.sid)
+                await _finalize_leave(self.redis, self.channel_layer, self.sid, self.rid)
             else:
                 # Abnormal drop: keep the seat warm and let the client resume
                 await rs.update_session(self.redis, self.sid, channel="")
                 gen = await rs.bump_gen(self.redis, self.sid)
                 if self.role == "participant":
-                    await rs.update_seat(self.redis, self.sid, away=True)
-                    await _broadcast_room(self.redis, self.channel_layer)
-                log.info("dropped sid=%s name=%s code=%s — holding %ss", self.sid[:8], self.name, close_code, GRACE_SECONDS)
-                task = asyncio.create_task(_expire_after_grace(self.sid, gen))
+                    await rs.update_seat(self.redis, self.rid, self.sid, away=True)
+                    await _broadcast_room(self.redis, self.channel_layer, self.rid)
+                log.info(
+                    "dropped sid=%s name=%s room=%s code=%s — holding %ss",
+                    self.sid[:8], self.name, self.rid, close_code, GRACE_SECONDS,
+                )
+                task = asyncio.create_task(_expire_after_grace(self.sid, gen, self.rid))
                 _background.add(task)
                 task.add_done_callback(_background.discard)
         finally:
@@ -225,6 +244,8 @@ class RoomConsumer(AsyncWebsocketConsumer):
             "signal": self.handle_signal,
             "media": self.handle_media,
             "react": self.handle_react,
+            "toss": self.handle_toss,
+            "spark": self.handle_spark,
             "take_seat": self.handle_take_seat,
             "leave_seat": self.handle_leave_seat,
             "bye": self.handle_bye,
@@ -242,6 +263,8 @@ class RoomConsumer(AsyncWebsocketConsumer):
 
     async def handle_ping(self, payload: dict):
         await rs.touch_alive(self.redis, self.sid)
+        if self.role:
+            await rs.mark_active(self.redis, self.rid)  # keeps the reaper walking this room
         await self._send({"type": "pong", "payload": {"t": payload.get("t")}})
         now = time.monotonic()
         if now - self.last_reap > 15:
@@ -252,12 +275,12 @@ class RoomConsumer(AsyncWebsocketConsumer):
         # One reaper at a time across all instances
         if not await self.redis.set("room:reap_lock", 1, nx=True, ex=10):
             return
-        dead = await rs.reap_dead(self.redis)
-        if dead:
-            log.info("reaped %d dead sessions", len(dead))
-            await _broadcast_room(self.redis, self.channel_layer)
+        reaped = await rs.reap_dead(self.redis)
+        for rid, dead in reaped.items():
+            log.info("reaped %d dead sessions room=%s", len(dead), rid)
+            await _broadcast_room(self.redis, self.channel_layer, rid)
             for sid in dead:
-                await self.channel_layer.group_send(GROUP_NAME, {"type": "peer.gone", "sid": sid})
+                await self.channel_layer.group_send(group_for(rid), {"type": "peer.gone", "sid": sid})
 
     async def handle_join(self, payload: dict):
         if self.role:
@@ -269,19 +292,19 @@ class RoomConsumer(AsyncWebsocketConsumer):
         if role not in ("participant", "audience"):
             role = "audience"
 
-        if role == "participant" and not await rs.claim_seat(self.redis, self.sid, self.name):
+        if role == "participant" and not await rs.claim_seat(self.redis, self.rid, self.sid, self.name):
             await self._send({"type": "seat_denied", "payload": {"reason": "full"}})
             role = "audience"
         if role == "audience":
-            await rs.add_audience(self.redis, self.sid, self.name)
+            await rs.add_audience(self.redis, self.rid, self.sid, self.name)
 
         self.role = role
         await rs.update_session(self.redis, self.sid, name=self.name, role=role)
-        log.info("join sid=%s name=%s role=%s", self.sid[:8], self.name, role)
+        log.info("join sid=%s name=%s role=%s room=%s", self.sid[:8], self.name, role, self.rid)
 
         await self._send_joined()
-        await self._send({"type": "chat_history", "payload": {"messages": await rs.get_chat_history(self.redis)}})
-        await _broadcast_room(self.redis, self.channel_layer)
+        await self._send({"type": "chat_history", "payload": {"messages": await rs.get_chat_history(self.redis, self.rid)}})
+        await _broadcast_room(self.redis, self.channel_layer, self.rid)
 
     async def handle_chat(self, payload: dict):
         if not self.role or not self.chat_bucket.take():
@@ -289,6 +312,17 @@ class RoomConsumer(AsyncWebsocketConsumer):
         content = str(payload.get("content") or "").strip()[:500]
         if not content:
             return
+        if content.lower() in ("/spark", "/question"):
+            if self.spark_bucket.take():
+                await self._draw_spark()
+            return
+        kind = None
+        command = fun.chat_command(content)
+        if command:
+            kind, content = command
+        await self._post(content, kind)
+
+    async def _post(self, content: str, kind: str | None = None):
         message = {
             "id": uuid.uuid4().hex[:12],
             "sid": self.sid,
@@ -296,8 +330,10 @@ class RoomConsumer(AsyncWebsocketConsumer):
             "content": content,
             "timestamp": _now(),
         }
-        await rs.append_chat(self.redis, message)
-        await self.channel_layer.group_send(GROUP_NAME, {"type": "chat.message", "message": message})
+        if kind:
+            message["flavor"] = kind
+        await rs.append_chat(self.redis, self.rid, message)
+        await self.channel_layer.group_send(self.group, {"type": "chat.message", "message": message})
 
     async def handle_signal(self, payload: dict):
         if not self.role or not self.signal_bucket.take():
@@ -306,56 +342,82 @@ class RoomConsumer(AsyncWebsocketConsumer):
         if not isinstance(target, str) or target == self.sid:
             return
         sess = await rs.get_session(self.redis, target)
-        if not sess or not sess.get("channel"):
-            return  # peer is away; the sender's watchdog will retry after resume
+        if not sess or not sess.get("channel") or sess["room"] != self.rid:
+            return  # peer is away (the sender's watchdog retries after resume) or in another room
 
         out = {"from": self.sid, "pcid": str(payload.get("pcid") or "")[:40]}
-        for key in ("description", "candidate", "kick"):
-            if key in payload:
-                out[key] = payload[key]
+        for k in ("description", "candidate", "kick"):
+            if k in payload:
+                out[k] = payload[k]
         await self.channel_layer.send(sess["channel"], {"type": "direct.signal", "payload": out})
 
     async def handle_media(self, payload: dict):
         if self.role != "participant":
             return
-        if await rs.update_seat(self.redis, self.sid, mic=bool(payload.get("mic")), cam=bool(payload.get("cam"))):
-            await _broadcast_room(self.redis, self.channel_layer)
+        fields = {"mic": bool(payload.get("mic")), "cam": bool(payload.get("cam")), "screen": bool(payload.get("screen"))}
+        if await rs.update_seat(self.redis, self.rid, self.sid, **fields):
+            await _broadcast_room(self.redis, self.channel_layer, self.rid)
 
     async def handle_react(self, payload: dict):
         emoji = payload.get("emoji")
         if not self.role or emoji not in REACTIONS or not self.react_bucket.take():
             return
         await self.channel_layer.group_send(
-            GROUP_NAME,
+            self.group,
             {"type": "reaction", "payload": {"session_id": self.sid, "name": self.name, "emoji": emoji}},
         )
+
+    async def handle_toss(self, payload: dict):
+        """Throw something soft at someone's tile. Everyone in the room sees it fly."""
+        target, item = payload.get("target"), payload.get("item")
+        if not self.role or item not in fun.THROWABLES or not isinstance(target, str) or target == self.sid:
+            return
+        if not self.toss_bucket.take() or not await rs.is_seated(self.redis, self.rid, target):
+            return
+        await self.channel_layer.group_send(
+            self.group,
+            {"type": "toss", "payload": {"from": self.sid, "name": self.name, "to": target, "item": item}},
+        )
+
+    async def handle_spark(self, payload: dict):
+        if self.role and self.spark_bucket.take():
+            await self._draw_spark()
+
+    async def _draw_spark(self):
+        """Draw a question card. It lands on the fire for everyone and in the chat log."""
+        current = await rs.get_spark(self.redis, self.rid)
+        text = fun.draw_spark(exclude=(current or {}).get("text"))
+        spark = {"id": uuid.uuid4().hex[:10], "text": text, "by": self.name, "at": _now()}
+        await rs.set_spark(self.redis, self.rid, spark)
+        await self._post(text, "spark")
+        await _broadcast_room(self.redis, self.channel_layer, self.rid)
 
     async def handle_take_seat(self, payload: dict):
         if self.role != "audience":
             return
-        if not await rs.claim_seat(self.redis, self.sid, self.name):
+        if not await rs.claim_seat(self.redis, self.rid, self.sid, self.name):
             await self._send({"type": "seat_denied", "payload": {"reason": "full"}})
             return
-        await rs.remove_audience(self.redis, self.sid)
+        await rs.remove_audience(self.redis, self.rid, self.sid)
         self.role = "participant"
         await rs.update_session(self.redis, self.sid, role="participant")
         await self._send_joined()
-        await _broadcast_room(self.redis, self.channel_layer)
+        await _broadcast_room(self.redis, self.channel_layer, self.rid)
 
     async def handle_leave_seat(self, payload: dict):
         if self.role != "participant":
             return
-        await rs.vacate_seat(self.redis, self.sid)
-        await rs.add_audience(self.redis, self.sid, self.name)
+        await rs.vacate_seat(self.redis, self.rid, self.sid)
+        await rs.add_audience(self.redis, self.rid, self.sid, self.name)
         self.role = "audience"
         await rs.update_session(self.redis, self.sid, role="audience")
         await self._send_joined()
-        await _broadcast_room(self.redis, self.channel_layer)
+        await _broadcast_room(self.redis, self.channel_layer, self.rid)
 
     async def handle_bye(self, payload: dict):
         self.closing_reason = "bye"
         if self.role:
-            await _finalize_leave(self.redis, self.channel_layer, self.sid)
+            await _finalize_leave(self.redis, self.channel_layer, self.sid, self.rid)
             self.role = None
             self.sid = None
         await self.close()
@@ -363,7 +425,7 @@ class RoomConsumer(AsyncWebsocketConsumer):
     async def handle_telemetry(self, payload: dict):
         if not self.telemetry_bucket.take():
             return
-        line = json.dumps({"sid": (self.sid or "")[:8], "name": self.name, "role": self.role, **payload})
+        line = json.dumps({"sid": (self.sid or "")[:8], "name": self.name, "role": self.role, "room": self.rid, **payload})
         telemetry_log.info(line[:6000])
 
     # ------------------------------------------------------------------
@@ -385,6 +447,9 @@ class RoomConsumer(AsyncWebsocketConsumer):
 
     async def reaction(self, event: dict):
         await self._send({"type": "reaction", "payload": event["payload"]})
+
+    async def toss(self, event: dict):
+        await self._send({"type": "toss", "payload": event["payload"]})
 
     async def direct_signal(self, event: dict):
         await self._send({"type": "signal", "payload": event["payload"]})
@@ -408,7 +473,7 @@ class RoomConsumer(AsyncWebsocketConsumer):
         await self._send({"type": "joined", "payload": {"role": self.role, "name": self.name, "session_id": self.sid}})
 
     async def _send_room_state_to_self(self):
-        payload = await rs.room_payload(self.redis)
+        payload = await rs.room_payload(self.redis, self.rid)
         await self._send({
             "type": "room_state",
             "payload": {**payload, "your_session_id": self.sid, "your_role": self.role or "audience"},

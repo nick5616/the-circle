@@ -5,3 +5,9 @@
 
 [build.environment]
   NODE_VERSION = "20"
+
+# Private rooms live at /r/<code>; serve the app for them
+[[redirects]]
+  from   = "/r/*"
+  to     = "/index.html"
+  status = 200

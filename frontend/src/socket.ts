@@ -1,5 +1,6 @@
 import type { ClientMessage, ServerMessage, WsStatus } from "./types";
 import { telemetry } from "./telemetry";
+import { MAIN, roomFromUrl } from "./rooms";
 
 // Reconnecting websocket with session resume.
 //
@@ -26,6 +27,7 @@ let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let pingTimer: ReturnType<typeof setInterval> | undefined;
 let creds: { sid: string; token: string } | null = null;
 let queue: string[] = [];
+let room = roomFromUrl(); // which room this socket belongs to; a session never crosses rooms
 
 const handlers = new Set<Handler>();
 const statusHandlers = new Set<StatusHandler>();
@@ -33,8 +35,14 @@ const statusHandlers = new Set<StatusHandler>();
 function wsUrl(): string {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   const base = import.meta.env.VITE_WS_URL ?? `${protocol}://${location.host}`;
-  const qs = creds ? `?sid=${encodeURIComponent(creds.sid)}&token=${encodeURIComponent(creds.token)}` : "";
-  return `${base}/ws/room/${qs}`;
+  const params = new URLSearchParams();
+  if (room !== MAIN) params.set("room", room);
+  if (creds) {
+    params.set("sid", creds.sid);
+    params.set("token", creds.token);
+  }
+  const qs = params.toString();
+  return `${base}/ws/room/${qs ? `?${qs}` : ""}`;
 }
 
 function setStatus(s: WsStatus) {
@@ -154,9 +162,13 @@ export const socket = {
     }
   },
 
-  /** Leave for real: tell the server to free our seat now, then start a fresh lobby session. */
-  leave(): void {
+  /**
+   * Leave for real: tell the server to free our seat now, then start a fresh
+   * lobby session — in `nextRoom` if given, otherwise the same room.
+   */
+  leave(nextRoom?: string): void {
     if (ws && ready && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "bye" }));
+    if (nextRoom) room = nextRoom;
     creds = null;
     queue = [];
     wanted = false;
@@ -189,6 +201,9 @@ export const socket = {
   },
   get sessionId() {
     return creds?.sid ?? "";
+  },
+  get room() {
+    return room;
   },
 
   /** Test hook: kill the socket as if the network blipped. */
